@@ -10,6 +10,7 @@ import org.junit.Assume._
 import org.junit.experimental.categories.Category
 
 import scala.concurrent.duration._
+import reporting.TestReporter
 import vulpix._
 
 import java.nio.file._
@@ -34,6 +35,12 @@ class BootstrappedOnlyCompilationTests {
       compileDir("tests/pos-custom-args/i13405", defaultOptions.and("-Xfatal-warnings")),
     ).checkCompile()
   }
+
+  @Test def posWithCompilerCC: Unit =
+    implicit val testGroup: TestGroup = TestGroup("compilePosWithCompilerCC")
+    aggregateTests(
+      compileDir("tests/pos-with-compiler-cc/dotc", withCompilerOptions.and("-language:experimental.captureChecking"))
+    ).checkCompile()
 
   @Test def posWithCompiler: Unit = {
     implicit val testGroup: TestGroup = TestGroup("compilePosWithCompiler")
@@ -123,6 +130,8 @@ class BootstrappedOnlyCompilationTests {
       compileFilesInDir("tests/run-custom-args/Yretain-trees", defaultOptions and "-Yretain-trees"),
       compileFilesInDir("tests/run-custom-args/Yread-comments", defaultOptions and "-Yread-docs"),
       compileFilesInDir("tests/run-custom-args/run-macros-erased", defaultOptions.and("-language:experimental.erasedDefinitions").and("-Xcheck-macros")),
+      compileDir("tests/run-custom-args/Xmacro-settings/simple", defaultOptions.and("-Xmacro-settings:one,two,three")),
+      compileDir("tests/run-custom-args/Xmacro-settings/compileTimeEnv", defaultOptions.and("-Xmacro-settings:a,b=1,c.b.a=x.y.z=1,myLogger.level=INFO")),
     )
   }.checkRuns()
 
@@ -214,6 +223,7 @@ object BootstrappedOnlyCompilationTests extends ParallelTesting {
   def isInteractive = SummaryReport.isInteractive
   def testFilter = Properties.testsFilter
   def updateCheckFiles: Boolean = Properties.testsUpdateCheckfile
+  def failedTests = TestReporter.lastRunFailedTests
 
   implicit val summaryReport: SummaryReporting = new SummaryReport
   @AfterClass def tearDown(): Unit = {

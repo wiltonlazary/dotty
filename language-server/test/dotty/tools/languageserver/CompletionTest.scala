@@ -643,7 +643,7 @@ class CompletionTest {
     code"""object Foo
           |extension (foo: Foo.type) def xxxx[A]: Int = 1
           |object Main { Foo.xx${m1} }"""
-      .completion(("xxxx", Method, "[A] => Int"))
+      .completion(("xxxx", Method, "[A]: Int"))
   }
 
   @Test def completeExtensionMethodWithParameterAndTypeParameter: Unit = {
@@ -762,7 +762,7 @@ class CompletionTest {
           |given Baz with {}
           |extension [A](using bar: Bar)(a: A)(using baz: Baz) def xxxx[B]: Either[A, B] = Left(a)
           |object Main { 123.xx${m1} }"""
-      .completion(("xxxx", Method, "(using baz: Baz): [B] => Either[Int, B]"))
+      .completion(("xxxx", Method, "(using baz: Baz)[B]: Either[Int, B]"))
   }
 
   @Test def completeExtensionMethodWithTypeBounds: Unit = {
@@ -772,7 +772,7 @@ class CompletionTest {
           |extension [A >: Bar](a: A) def xxxx[B <: a.type]: Either[A, B] = Left(a)
           |val foo = new Foo {}
           |object Main { foo.xx${m1} }"""
-      .completion(("xxxx", Method, "[B <: (foo : Foo)] => Either[Foo, B]"))
+          .completion(("xxxx", Method, "[B <: (foo : Foo)]: Either[Foo, B]"))
   }
 
   @Test def completeInheritedExtensionMethod: Unit = {
@@ -1034,7 +1034,7 @@ class CompletionTest {
         ("→", Method, "[B](y: B): (A, B)"),
         ("!=", Method, "(x$0: Any): Boolean"),
         ("fromOrdinal", Method, "(ordinal: Int): Foo.Bar"),
-        ("asInstanceOf", Method, "[X0] => X0"),
+        ("asInstanceOf", Method, "[X0]: X0"),
         ("->", Method, "[B](y: B): (A, B)"),
         ("wait", Method, "(x$0: Long, x$1: Int): Unit"),
         ("`back-tick`", Field, "Foo.Bar"),
@@ -1042,7 +1042,7 @@ class CompletionTest {
         ("formatted", Method, "(fmtstr: String): String"),
         ("ensuring", Method, "(cond: A => Boolean, msg: => Any): A"),
         ("wait", Method, "(): Unit"),
-        ("isInstanceOf", Method, "[X0] => Boolean"),
+        ("isInstanceOf", Method, "[X0]: Boolean"),
         ("`match`", Field, "Foo.Bar"),
         ("toString", Method, "(): String"),
         ("ensuring", Method, "(cond: A => Boolean): A"),
@@ -1440,5 +1440,92 @@ class CompletionTest {
             """
     )
     withProjects(p1, p2).completion(m1, Set(("name", Method, "=> String")))
+  }
+
+  @Test def generatedValDefCompletions: Unit = {
+    val expected = ("testMethod", Method, "=> Unit")
+    code"""case class Test(x: Int, y: Int)
+          |def testMethod: Unit = ???
+          |object M:
+          |  val (x, y) =
+          |    testMet$m1
+          |    (1, 2)
+          |  val Test(x, y) =
+          |    testMet$m2
+          |    Test(1, 2)
+          """
+      .completion(m1, expected)
+      .completion(m2, expected)
+  }
+
+  @Test def exportCompletions: Unit = {
+    code"""object Foo:
+          |  def xDef = 1
+          |  val xVal = 1
+          |  class xClass()
+          |  object xObject {}
+          |object Test:
+          |  export Foo.x${m1}
+          """
+      .completion(m1, Set(
+        ("xDef", Method, "=> Int"),
+        ("xVal", Field, "Int"),
+        ("xObject", Module, "Foo.xObject"),
+        ("xClass", Module, "Foo.xClass"),
+        ("xClass", Class, "Foo.xClass")))
+  }
+
+  @Test def patternGuardCompletions: Unit = {
+    code"""object Foo:
+          |  1 match { case foo if fo${m1} => }
+          |  1 match { case foo => fo${m2} }
+          """
+      .completion(m1, Set(("foo", Field, "Int")))
+      .completion(m2, Set(("foo", Field, "Int")))
+  }
+
+  @Test def patternGuardCompletionsUnApply: Unit = {
+    code"""object Foo:
+          |  Some(1) match { case Some(foo) if fo${m1} => }
+          |  Some(1) match { case Some(foo) => fo${m2} }
+          """
+      .completion(m1, Set(("foo", Field, "Int")))
+      .completion(m2, Set(("foo", Field, "Int")))
+  }
+
+  @Test def patternGuardCompletionsNested: Unit = {
+    code"""object Foo:
+          |  ((1, 2), 3) match { case ((foo1, foo2), foo3) if fo${m1} => }
+          |  ((1, 2), 3) match { case ((foo1, foo2), foo3) => fo${m2} }
+          """
+      .completion(m1, Set(("foo1", Field, "Int"), ("foo2", Field, "Int"), ("foo3", Field, "Int")))
+      .completion(m2, Set(("foo1", Field, "Int"), ("foo2", Field, "Int"), ("foo3", Field, "Int")))
+  }
+
+  @Test def patternGuardCompletionsSeq: Unit = {
+    code"""object Foo:
+          |  Seq(1, 2) match { case foo1 :: foo2 if fo${m1} => }
+          |  Seq(1, 2) match { case foo1 :: foo2 => fo${m2} }
+          """
+      .completion(m1, Set(("foo1", Field, "Int"), ("foo2", Field, "List[Int]")))
+      .completion(m2, Set(("foo1", Field, "Int"), ("foo2", Field, "List[Int]")))
+  }
+
+  @Test def noCompletionsInsidePatternBind: Unit = {
+    code"""object Foo:
+          |  (1, 2) match { case (foo, fo${m1}
+          """
+      .noCompletions()
+  }
+
+  @Test def badTypeCompletions: Unit = {
+    code"""trait Foo
+          |object Test:
+          |  def foo: ArrayBuffer[Fo${m1}] = ???
+          """
+      .completion(m1, Set(
+          ("Foo",Class,"Foo")
+        )
+      )
   }
 }

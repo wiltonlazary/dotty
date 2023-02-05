@@ -164,8 +164,8 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
   def Inlined(call: Tree, bindings: List[MemberDef], expansion: Tree)(using Context): Inlined =
     ta.assignType(untpd.Inlined(call, bindings, expansion), bindings, expansion)
 
-  def TypeTree(tp: Type)(using Context): TypeTree =
-    untpd.TypeTree().withType(tp)
+  def TypeTree(tp: Type, inferred: Boolean = false)(using Context): TypeTree =
+    (if inferred then untpd.InferredTypeTree() else untpd.TypeTree()).withType(tp)
 
   def SingletonTypeTree(ref: Tree)(using Context): SingletonTypeTree =
     ta.assignType(untpd.SingletonTypeTree(ref), ref)
@@ -203,8 +203,8 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
     ta.assignType(untpd.UnApply(fun, implicits, patterns), proto)
   }
 
-  def ValDef(sym: TermSymbol, rhs: LazyTree = EmptyTree)(using Context): ValDef =
-    ta.assignType(untpd.ValDef(sym.name, TypeTree(sym.info), rhs), sym)
+  def ValDef(sym: TermSymbol, rhs: LazyTree = EmptyTree, inferred: Boolean = false)(using Context): ValDef =
+    ta.assignType(untpd.ValDef(sym.name, TypeTree(sym.info, inferred), rhs), sym)
 
   def SyntheticValDef(name: TermName, rhs: Tree, flags: FlagSet = EmptyFlags)(using Context): ValDef =
     ValDef(newSymbol(ctx.owner, name, Synthetic | flags, rhs.tpe.widen, coord = rhs.span), rhs)
@@ -340,27 +340,35 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
    *  Its position is the union of all functions in `fns`.
    */
   def AnonClass(parents: List[Type], fns: List[TermSymbol], methNames: List[TermName])(using Context): Block = {
-    val owner = fns.head.owner
+    AnonClass(fns.head.owner, parents, fns.map(_.span).reduceLeft(_ union _)) { cls =>
+      def forwarder(fn: TermSymbol, name: TermName) = {
+        val fwdMeth = fn.copy(cls, name, Synthetic | Method | Final).entered.asTerm
+        for overridden <- fwdMeth.allOverriddenSymbols do
+          if overridden.is(Extension) then fwdMeth.setFlag(Extension)
+          if !overridden.is(Deferred) then fwdMeth.setFlag(Override)
+        DefDef(fwdMeth, ref(fn).appliedToArgss(_))
+      }
+      fns.lazyZip(methNames).map(forwarder)
+    }
+  }
+
+  /** An anonymous class
+   *
+   *      new parents { body }
+   *
+   * with the specified owner and position.
+   */
+  def AnonClass(owner: Symbol, parents: List[Type], coord: Coord)(body: ClassSymbol => List[Tree])(using Context): Block =
     val parents1 =
       if (parents.head.classSymbol.is(Trait)) {
         val head = parents.head.parents.head
         if (head.isRef(defn.AnyClass)) defn.AnyRefType :: parents else head :: parents
       }
       else parents
-    val cls = newNormalizedClassSymbol(owner, tpnme.ANON_CLASS, Synthetic | Final, parents1,
-        coord = fns.map(_.span).reduceLeft(_ union _))
+    val cls = newNormalizedClassSymbol(owner, tpnme.ANON_CLASS, Synthetic | Final, parents1, coord = coord)
     val constr = newConstructor(cls, Synthetic, Nil, Nil).entered
-    def forwarder(fn: TermSymbol, name: TermName) = {
-      val fwdMeth = fn.copy(cls, name, Synthetic | Method | Final).entered.asTerm
-      for overridden <- fwdMeth.allOverriddenSymbols do
-        if overridden.is(Extension) then fwdMeth.setFlag(Extension)
-        if !overridden.is(Deferred) then fwdMeth.setFlag(Override)
-      DefDef(fwdMeth, ref(fn).appliedToArgss(_))
-    }
-    val forwarders = fns.lazyZip(methNames).map(forwarder)
-    val cdef = ClassDef(cls, DefDef(constr), forwarders)
+    val cdef = ClassDef(cls, DefDef(constr), body(cls))
     Block(cdef :: Nil, New(cls.typeRef, Nil))
-  }
 
   def Import(expr: Tree, selectors: List[untpd.ImportSelector])(using Context): Import =
     ta.assignType(untpd.Import(expr, selectors), newImportSymbol(ctx.owner, expr))
@@ -406,6 +414,10 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
     case _ => false
   }
 
+  def needsIdent(tp: Type)(using Context): Boolean = tp match
+    case tp: TermRef => tp.prefix eq NoPrefix
+    case _ => false
+
   /** A tree representing the same reference as the given type */
   def ref(tp: NamedType, needLoad: Boolean = true)(using Context): Tree =
     if (tp.isType) TypeTree(tp)
@@ -420,7 +432,7 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
       else
         val res = Select(TypeTree(pre), tp)
         if needLoad && !res.symbol.isStatic then
-          throw new TypeError(em"cannot establish a reference to $res")
+          throw TypeError(em"cannot establish a reference to $res")
         res
 
   def ref(sym: Symbol)(using Context): Tree =
@@ -849,7 +861,7 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
     }
 
     /** After phase `trans`, set the owner of every definition in this tree that was formerly
-     *  owner by `from` to `to`.
+     *  owned by `from` to `to`.
      */
     def changeOwnerAfter(from: Symbol, to: Symbol, trans: DenotTransformer)(using Context): ThisTree =
       if (ctx.phase == trans.next) {
@@ -1010,12 +1022,17 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
 
     /** `tree ne null` (might need a cast to be type correct) */
     def testNotNull(using Context): Tree = {
-      val receiver = if (tree.tpe.isBottomType)
-        // If the receiver is of type `Nothing` or `Null`, add an ascription so that the selection
-        // succeeds: e.g. `null.ne(null)` doesn't type, but `(null: AnyRef).ne(null)` does.
-        Typed(tree, TypeTree(defn.AnyRefType))
-      else tree.ensureConforms(defn.ObjectType)
-      receiver.select(defn.Object_ne).appliedTo(nullLiteral).withSpan(tree.span)
+      // If the receiver is of type `Nothing` or `Null`, add an ascription or cast
+      // so that the selection succeeds.
+      // e.g. `null.ne(null)` doesn't type, but `(null: AnyRef).ne(null)` does.
+      val receiver =
+        if tree.tpe.isBottomType then
+          if ctx.explicitNulls then tree.cast(defn.AnyRefType)
+          else Typed(tree, TypeTree(defn.AnyRefType))
+        else tree.ensureConforms(defn.ObjectType)
+      // also need to cast the null literal to AnyRef in explicit nulls
+      val nullLit = if ctx.explicitNulls then nullLiteral.cast(defn.AnyRefType) else nullLiteral
+      receiver.select(defn.Object_ne).appliedTo(nullLit).withSpan(tree.span)
     }
 
     /** If inititializer tree is `_`, the default value of its type,
@@ -1131,35 +1148,38 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
       expand(tree, tree.tpe.widen)
   }
 
-  inline val MapRecursionLimit = 10
-
   extension (trees: List[Tree])
 
-    /** A map that expands to a recursive function. It's equivalent to
+    /** Equivalent (but faster) to
      *
      *    flatten(trees.mapConserve(op))
      *
-     *  and falls back to it after `MaxRecursionLimit` recursions.
-     *  Before that it uses a simpler method that uses stackspace
-     *  instead of heap.
-     *  Note `op` is duplicated in the generated code, so it should be
-     *  kept small.
+     *  assuming that `trees` does not contain `Thicket`s to start with.
      */
-    inline def mapInline(inline op: Tree => Tree): List[Tree] =
-      def recur(trees: List[Tree], count: Int): List[Tree] =
-        if count > MapRecursionLimit then
-          // use a slower implementation that avoids stack overflows
-          flatten(trees.mapConserve(op))
-        else trees match
-          case tree :: rest =>
-            val tree1 = op(tree)
-            val rest1 = recur(rest, count + 1)
-            if (tree1 eq tree) && (rest1 eq rest) then trees
-            else tree1 match
-              case Thicket(elems1) => elems1 ::: rest1
-              case _ => tree1 :: rest1
-          case nil => nil
-      recur(trees, 0)
+    inline def flattenedMapConserve(inline f: Tree => Tree): List[Tree] =
+      @tailrec
+      def loop(mapped: ListBuffer[Tree] | Null, unchanged: List[Tree], pending: List[Tree]): List[Tree] =
+        if pending.isEmpty then
+          if mapped == null then unchanged
+          else mapped.prependToList(unchanged)
+        else
+          val head0 = pending.head
+          val head1 = f(head0)
+
+          if head1 eq head0 then
+            loop(mapped, unchanged, pending.tail)
+          else
+            val buf = if mapped == null then new ListBuffer[Tree] else mapped
+            var xc = unchanged
+            while xc ne pending do
+              buf += xc.head
+              xc = xc.tail
+            head1 match
+              case Thicket(elems1) => buf ++= elems1
+              case _ => buf += head1
+            val tail0 = pending.tail
+            loop(buf, tail0, tail0)
+      loop(null, trees, trees)
 
     /** Transform statements while maintaining import contexts and expression contexts
      *  in the same way as Typer does. The code addresses additional concerns:
@@ -1283,7 +1303,7 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
     else if (tree.tpe.widen isRef numericCls)
       tree
     else {
-      report.warning(i"conversion from ${tree.tpe.widen} to ${numericCls.typeRef} will always fail at runtime.")
+      report.warning(em"conversion from ${tree.tpe.widen} to ${numericCls.typeRef} will always fail at runtime.")
       Throw(New(defn.ClassCastExceptionClass.typeRef, Nil)).withSpan(tree.span)
     }
   }

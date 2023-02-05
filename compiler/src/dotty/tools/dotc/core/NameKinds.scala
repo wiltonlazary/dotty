@@ -85,7 +85,7 @@ object NameKinds {
       case _ => None
     }
 
-    simpleNameKinds(tag) = this
+    simpleNameKinds(tag) = this: @unchecked
   }
 
   /** The kind of names that get formed by adding a prefix to an underlying name */
@@ -152,7 +152,7 @@ object NameKinds {
 
     def infoString: String = s"Qualified $separator"
 
-    qualifiedNameKinds(tag) = this
+    qualifiedNameKinds(tag) = this: @unchecked
   }
 
   /** An extractor for qualified names of an arbitrary kind */
@@ -190,7 +190,7 @@ object NameKinds {
       else -1
     }
 
-    numberedNameKinds(tag) = this
+    numberedNameKinds(tag) = this: @unchecked
   }
 
   /** An extractor for numbered names of arbitrary kind */
@@ -225,7 +225,7 @@ object NameKinds {
     def fresh(prefix: TypeName)(using Context): TypeName =
       fresh(prefix.toTermName).toTypeName
 
-    uniqueNameKinds(separator) = this
+    uniqueNameKinds(separator) = this: @unchecked
   }
 
   /** An extractor for unique names of arbitrary kind */
@@ -300,6 +300,7 @@ object NameKinds {
   val UniqueInlineName: UniqueNameKind       = new UniqueNameKind("$i")
   val InlineScrutineeName: UniqueNameKind    = new UniqueNameKind("$scrutinee")
   val InlineBinderName: UniqueNameKind       = new UniqueNameKind("$proxy")
+  val MacroNames: UniqueNameKind             = new UniqueNameKind("$macro$")
 
   /** A kind of unique extension methods; Unlike other unique names, these can be
    *  unmangled.
@@ -323,6 +324,8 @@ object NameKinds {
   val PatMatGivenVarName: UniqueNameKind     = new UniqueNameKind("$given")
 
   val LocalOptInlineLocalObj: UniqueNameKind = new UniqueNameKind("ilo")
+
+  val BoundaryName: UniqueNameKind           = new UniqueNameKind("boundary")
 
   /** The kind of names of default argument getters */
   val DefaultGetterName: NumberedNameKind = new NumberedNameKind(DEFAULTGETTER, "DefaultGetter") {

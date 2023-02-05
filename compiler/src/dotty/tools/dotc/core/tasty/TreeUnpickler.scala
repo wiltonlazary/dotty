@@ -31,6 +31,8 @@ import util.{SourceFile, Property}
 import ast.{Trees, tpd, untpd}
 import Trees._
 import Decorators._
+import transform.SymUtils._
+import cc.{adaptFunctionTypeUnderPureFuns, adaptByNameArgUnderPureFuns}
 
 import dotty.tools.tasty.{TastyBuffer, TastyReader}
 import TastyBuffer._
@@ -84,6 +86,9 @@ class TreeUnpickler(reader: TastyReader,
 
   /** The root owner tree. See `OwnerTree` class definition. Set by `enterTopLevel`. */
   private var ownerTree: OwnerTree = _
+
+  /** Was unpickled class compiled with pureFunctions? */
+  private var knowsPureFuns: Boolean = false
 
   private def registerSym(addr: Addr, sym: Symbol) =
     symAtAddr(addr) = sym
@@ -371,7 +376,7 @@ class TreeUnpickler(reader: TastyReader,
                 // Note that the lambda "rt => ..." is not equivalent to a wildcard closure!
                 // Eta expansion of the latter puts readType() out of the expression.
             case APPLIEDtype =>
-              readType().appliedTo(until(end)(readType()))
+              postProcessFunction(readType().appliedTo(until(end)(readType())))
             case TYPEBOUNDS =>
               val lo = readType()
               if nothingButMods(end) then
@@ -450,7 +455,8 @@ class TreeUnpickler(reader: TastyReader,
           val ref = readAddr()
           typeAtAddr.getOrElseUpdate(ref, forkAt(ref).readType())
         case BYNAMEtype =>
-          ExprType(readType())
+          val arg = readType()
+          ExprType(if knowsPureFuns then arg else arg.adaptByNameArgUnderPureFuns)
         case _ =>
           ConstantType(readConstant(tag))
       }
@@ -483,6 +489,12 @@ class TreeUnpickler(reader: TastyReader,
 
     def readTermRef()(using Context): TermRef =
       readType().asInstanceOf[TermRef]
+
+    /** Under pureFunctions, map all function types to impure function types,
+     *  unless the unpickled class was also compiled with pureFunctions.
+     */
+    private def postProcessFunction(tp: Type)(using Context): Type =
+      if knowsPureFuns then tp else tp.adaptFunctionTypeUnderPureFuns
 
 // ------ Reading definitions -----------------------------------------------------
 
@@ -613,7 +625,9 @@ class TreeUnpickler(reader: TastyReader,
             else
               newSymbol(ctx.owner, name, flags, completer, privateWithin, coord)
         }
-      val annots =  annotFns.map(_(sym.owner))
+      val annotOwner =
+        if sym.owner.isClass then newLocalDummy(sym.owner) else sym.owner
+      val annots = annotFns.map(_(annotOwner))
       sym.annotations = annots
       if sym.isOpaqueAlias then sym.setFlag(Deferred)
       val isScala2MacroDefinedInScala3 = flags.is(Macro, butNot = Inline) && flags.is(Erased)
@@ -631,6 +645,8 @@ class TreeUnpickler(reader: TastyReader,
       }
       registerSym(start, sym)
       if (isClass) {
+        if sym.owner.is(Package) && annots.exists(_.hasSymbol(defn.WithPureFunsAnnot)) then
+          knowsPureFuns = true
         sym.completer.withDecls(newScope)
         forkAt(templateStart).indexTemplateParams()(using localContext(sym))
       }
@@ -724,7 +740,15 @@ class TreeUnpickler(reader: TastyReader,
       val tp = readType()
       val lazyAnnotTree = readLaterWithOwner(end, _.readTerm())
       owner =>
-        Annotation.deferredSymAndTree(tp.typeSymbol)(lazyAnnotTree(owner).complete)
+        new DeferredSymAndTree(tp.typeSymbol, lazyAnnotTree(owner).complete):
+          // Only force computation of symbol if it has the right name. This added
+          // amount of laziness is sometimes necessary to avid cycles. Test case pos/i15980.
+          override def hasSymbol(sym: Symbol)(using Context) = tp match
+            case tp: TypeRef =>
+              tp.designator match
+                case name: Name => name == sym.name && tp.symbol == sym
+                case _ => tp.symbol == sym
+            case _ => this.symbol == sym
 
     /** Create symbols for the definitions in the statement sequence between
      *  current address and `end`.
@@ -830,7 +854,7 @@ class TreeUnpickler(reader: TastyReader,
         else if sym.isInlineMethod && !sym.is(Deferred) then
           // The body of an inline method is stored in an annotation, so no need to unpickle it again
           new Trees.Lazy[Tree] {
-            def complete(using Context) = typer.Inliner.bodyToInline(sym)
+            def complete(using Context) = inlines.Inlines.bodyToInline(sym)
           }
         else
           readLater(end, _.readTerm())
@@ -847,7 +871,7 @@ class TreeUnpickler(reader: TastyReader,
       def TypeDef(rhs: Tree) =
         ta.assignType(untpd.TypeDef(sym.name.asTypeName, rhs), sym)
 
-      def ta =  ctx.typeAssigner
+      def ta = ctx.typeAssigner
 
       val name = readName()
       pickling.println(s"reading def of $name at $start")
@@ -935,6 +959,51 @@ class TreeUnpickler(reader: TastyReader,
       tree.setDefTree
     }
 
+    /** Read enough of parent to determine its type, without reading arguments
+     *  of applications. This is necessary to make TreeUnpickler as lazy as Namer
+     *  in this regard. See i16673 for a test case.
+     */
+    private def readParentType()(using Context): Type =
+      readByte() match
+        case TYPEAPPLY =>
+          val end = readEnd()
+          val tycon = readParentType()
+          if tycon.typeParams.isEmpty then
+            goto(end)
+            tycon
+          else
+            val args = until(end)(readTpt())
+            val cls = tycon.classSymbol
+            assert(cls.typeParams.hasSameLengthAs(args))
+            cls.typeRef.appliedTo(args.tpes)
+        case APPLY | BLOCK =>
+          val end = readEnd()
+          try readParentType()
+          finally goto(end)
+        case SELECTin =>
+          val end = readEnd()
+          readName()
+          readTerm() match
+            case nu: New =>
+              try nu.tpe
+              finally goto(end)
+        case SHAREDterm =>
+          forkAt(readAddr()).readParentType()
+
+    /** Read template parents
+     *  @param  withArgs if false, only read enough of parent trees to determine their type
+     *                   but skip constructor arguments. Return any trees that were partially
+     *                   parsed in this way as InferredTypeTrees.
+     */
+    def readParents(withArgs: Boolean)(using Context): List[Tree] =
+      collectWhile(nextByte != SELFDEF && nextByte != DEFDEF) {
+        nextUnsharedTag match
+          case APPLY | TYPEAPPLY | BLOCK =>
+            if withArgs then readTerm()
+            else InferredTypeTree().withType(readParentType())
+          case _ => readTpt()
+      }
+
     private def readTemplate(using Context): Template = {
       val start = currentAddr
       assert(sourcePathAt(start).isEmpty)
@@ -957,12 +1026,8 @@ class TreeUnpickler(reader: TastyReader,
         while (bodyIndexer.reader.nextByte != DEFDEF) bodyIndexer.skipTree()
         bodyIndexer.indexStats(end)
       }
-      val parents = collectWhile(nextByte != SELFDEF && nextByte != DEFDEF) {
-        nextUnsharedTag match {
-          case APPLY | TYPEAPPLY | BLOCK => readTerm()(using parentCtx)
-          case _ => readTpt()(using parentCtx)
-        }
-      }
+      val parentReader = fork
+      val parents = readParents(withArgs = false)(using parentCtx)
       val parentTypes = parents.map(_.tpe.dealias)
       val self =
         if (nextByte == SELFDEF) {
@@ -976,7 +1041,13 @@ class TreeUnpickler(reader: TastyReader,
         selfInfo = if (self.isEmpty) NoType else self.tpt.tpe)
         .integrateOpaqueMembers
       val constr = readIndexedDef().asInstanceOf[DefDef]
-      val mappedParents = parents.map(_.changeOwner(localDummy, constr.symbol))
+      val mappedParents: LazyTreeList =
+        if parents.exists(_.isInstanceOf[InferredTypeTree]) then
+          // parents were not read fully, will need to be read again later on demand
+          new LazyReader(parentReader, localDummy, ctx.mode, ctx.source,
+            _.readParents(withArgs = true)
+             .map(_.changeOwner(localDummy, constr.symbol)))
+        else parents
 
       val lazyStats = readLater(end, rdr => {
         val stats = rdr.readIndexedStats(localDummy, end)
@@ -985,7 +1056,7 @@ class TreeUnpickler(reader: TastyReader,
       defn.patchStdLibClass(cls)
       NamerOps.addConstructorProxies(cls)
       setSpan(start,
-        untpd.Template(constr, mappedParents, Nil, self, lazyStats)
+        untpd.Template(constr, mappedParents, self, lazyStats)
           .withType(localDummy.termRef))
     }
 
@@ -1157,7 +1228,8 @@ class TreeUnpickler(reader: TastyReader,
         case SINGLETONtpt =>
           SingletonTypeTree(readTerm())
         case BYNAMEtpt =>
-          ByNameTypeTree(readTpt())
+          val arg = readTpt()
+          ByNameTypeTree(if knowsPureFuns then arg else arg.adaptByNameArgUnderPureFuns)
         case NAMEDARG =>
           NamedArg(readName(), readTerm())
         case _ =>
@@ -1213,6 +1285,12 @@ class TreeUnpickler(reader: TastyReader,
               else tpd.Apply(fn, args)
             case TYPEAPPLY =>
               tpd.TypeApply(readTerm(), until(end)(readTpt()))
+            case APPLYsigpoly =>
+              val fn = readTerm()
+              val methType = readType()
+              val args = until(end)(readTerm())
+              val fun2 = typer.Applications.retypeSignaturePolymorphicFn(fn, methType)
+              tpd.Apply(fun2, args)
             case TYPED =>
               val expr = readTerm()
               val tpt = readTpt()
@@ -1337,11 +1415,9 @@ class TreeUnpickler(reader: TastyReader,
               // types. This came up in #137 of collection strawman.
               val tycon = readTpt()
               val args = until(end)(readTpt())
-              val ownType =
-                if (tycon.symbol == defn.andType) AndType(args(0).tpe, args(1).tpe)
-                else if (tycon.symbol == defn.orType) OrType(args(0).tpe, args(1).tpe, soft = false)
-                else tycon.tpe.safeAppliedTo(args.tpes)
-              untpd.AppliedTypeTree(tycon, args).withType(ownType)
+              val tree = untpd.AppliedTypeTree(tycon, args)
+              val ownType = ctx.typeAssigner.processAppliedType(tree, tycon.tpe.safeAppliedTo(args.tpes))
+              tree.withType(postProcessFunction(ownType))
             case ANNOTATEDtpt =>
               Annotated(readTpt(), readTerm())
             case LAMBDAtpt =>

@@ -15,8 +15,8 @@ import scala.annotation.internal.sharable
 object Names {
   import NameKinds._
 
-  /** Things that can be turned into names with `totermName` and `toTypeName`
-   *  Decorators defines implements these as extension methods for strings.
+  /** Things that can be turned into names with `toTermName` and `toTypeName`.
+   *  Decorators implements these as extension methods for strings.
    */
   type PreName = Name | String
 
@@ -25,7 +25,7 @@ object Names {
    */
   abstract class Designator
 
-  /** A name if either a term name or a type name. Term names can be simple
+  /** A name is either a term name or a type name. Term names can be simple
    *  or derived. A simple term name is essentially an interned string stored
    *  in a name table. A derived term name adds a tag, and possibly a number
    *  or a further simple name to some other name.
@@ -69,10 +69,17 @@ object Names {
 
     /** Apply rewrite rule given by `f` to some part of this name, skipping and rewrapping
      *  other decorators.
-     *  Stops at derived names whose kind has `definesNewName = true`.
+     *  Stops at DerivedNames with infos of kind QualifiedInfo.
      *  If `f` does not apply to any part, return name unchanged.
      */
     def replace(f: PartialFunction[Name, Name]): ThisName
+
+    /** Same as replace, but does not stop at DerivedNames with infos of kind QualifiedInfo. */
+    def replaceDeep(f: PartialFunction[Name, Name]): ThisName =
+      replace(f.orElse {
+        case DerivedName(underlying, info: QualifiedInfo) =>
+          underlying.replaceDeep(f).derived(info)
+      })
 
     /** If partial function `f` is defined for some part of this name, apply it
      *  in a Some, otherwise None.
@@ -568,7 +575,7 @@ object Names {
           enterIfNew(cs, offset, len)
       }
 
-    addEntryAt(0, EmptyTermName)
+    addEntryAt(0, EmptyTermName: @unchecked)
   end NameTable
 
   /** Hashtable for finding term names quickly. */

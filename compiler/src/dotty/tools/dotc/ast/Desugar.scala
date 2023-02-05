@@ -6,6 +6,7 @@ import core._
 import util.Spans._, Types._, Contexts._, Constants._, Names._, NameOps._, Flags._
 import Symbols._, StdNames._, Trees._, ContextOps._
 import Decorators._, transform.SymUtils._
+import Annotations.Annotation
 import NameKinds.{UniqueName, EvidenceParamName, DefaultGetterName, WildcardParamName}
 import typer.{Namer, Checking}
 import util.{Property, SourceFile, SourcePosition, Chars}
@@ -117,7 +118,7 @@ object desugar {
             if (local.exists) (defctx.owner.thisType select local).dealiasKeepAnnots
             else {
               def msg =
-                s"no matching symbol for ${tp.symbol.showLocated} in ${defctx.owner} / ${defctx.effectiveScope.toList}"
+                em"no matching symbol for ${tp.symbol.showLocated} in ${defctx.owner} / ${defctx.effectiveScope.toList}"
               ErrorType(msg).assertingErrorsReported(msg)
             }
           case _ =>
@@ -165,32 +166,41 @@ object desugar {
    *
    *  Generate setter where needed
    */
-  def valDef(vdef0: ValDef)(using Context): Tree = {
+  def valDef(vdef0: ValDef)(using Context): Tree =
     val vdef @ ValDef(_, tpt, rhs) = vdef0
-    val mods = vdef.mods
-
     val valName = normalizeName(vdef, tpt).asTermName
-    val vdef1 = cpy.ValDef(vdef)(name = valName)
+    var mods1 = vdef.mods
 
-    if (isSetterNeeded(vdef)) {
-      // TODO: copy of vdef as getter needed?
-      // val getter = ValDef(mods, name, tpt, rhs) withPos vdef.pos?
-      // right now vdef maps via expandedTree to a thicket which concerns itself.
-      // I don't see a problem with that but if there is one we can avoid it by making a copy here.
+    def dropInto(tpt: Tree): Tree = tpt match
+      case Into(tpt1) =>
+        mods1 = vdef.mods.withAddedAnnotation(
+          TypedSplice(
+            Annotation(defn.AllowConversionsAnnot, tpt.span.startPos).tree))
+        tpt1
+      case ByNameTypeTree(tpt1) =>
+        cpy.ByNameTypeTree(tpt)(dropInto(tpt1))
+      case PostfixOp(tpt1, op) if op.name == tpnme.raw.STAR =>
+        cpy.PostfixOp(tpt)(dropInto(tpt1), op)
+      case _ =>
+        tpt
+
+    val vdef1 = cpy.ValDef(vdef)(name = valName, tpt = dropInto(tpt))
+      .withMods(mods1)
+
+    if isSetterNeeded(vdef) then
       val setterParam = makeSyntheticParameter(tpt = SetterParamTree().watching(vdef))
       // The rhs gets filled in later, when field is generated and getter has parameters (see Memoize miniphase)
       val setterRhs = if (vdef.rhs.isEmpty) EmptyTree else unitLiteral
       val setter = cpy.DefDef(vdef)(
-        name    = valName.setterName,
-        paramss = (setterParam :: Nil) :: Nil,
-        tpt     = TypeTree(defn.UnitType),
-        rhs     = setterRhs
-      ).withMods((mods | Accessor) &~ (CaseAccessor | GivenOrImplicit | Lazy))
-       .dropEndMarker() // the end marker should only appear on the getter definition
+          name    = valName.setterName,
+          paramss = (setterParam :: Nil) :: Nil,
+          tpt     = TypeTree(defn.UnitType),
+          rhs     = setterRhs
+        ).withMods((vdef.mods | Accessor) &~ (CaseAccessor | GivenOrImplicit | Lazy))
+        .dropEndMarker() // the end marker should only appear on the getter definition
       Thicket(vdef1, setter)
-    }
     else vdef1
-  }
+  end valDef
 
   def makeImplicitParameters(tpts: List[Tree], implicitFlag: FlagSet, forPrimaryConstructor: Boolean = false)(using Context): List[ValDef] =
     for (tpt <- tpts) yield {
@@ -468,7 +478,7 @@ object desugar {
 
     if mods.is(Trait) then
       for vparams <- originalVparamss; vparam <- vparams do
-        if vparam.tpt.isInstanceOf[ByNameTypeTree] then
+        if isByNameType(vparam.tpt) then
           report.error(em"implementation restriction: traits cannot have by name parameters", vparam.srcPos)
 
     // Annotations on class _type_ parameters are set on the derived parameters
@@ -576,9 +586,8 @@ object desugar {
       appliedTypeTree(tycon, targs)
     }
 
-    def isRepeated(tree: Tree): Boolean = tree match {
+    def isRepeated(tree: Tree): Boolean = stripByNameType(tree) match {
       case PostfixOp(_, Ident(tpnme.raw.STAR)) => true
-      case ByNameTypeTree(tree1) => isRepeated(tree1)
       case _ => false
     }
 
@@ -906,16 +915,16 @@ object desugar {
       name = normalizeName(mdef, mdef.tpt).asTermName,
       paramss =
         if mdef.name.isRightAssocOperatorName then
-          val (typaramss, paramss) = mdef.paramss.span(isTypeParamClause) // first extract type parameters
+          val (rightTyParams, paramss) = mdef.paramss.span(isTypeParamClause) // first extract type parameters
 
           paramss match
-            case params :: paramss1 => // `params` must have a single parameter and without `given` flag
+            case rightParam :: paramss1 => // `rightParam` must have a single parameter and without `given` flag
 
               def badRightAssoc(problem: String) =
-                report.error(i"right-associative extension method $problem", mdef.srcPos)
+                report.error(em"right-associative extension method $problem", mdef.srcPos)
                 extParamss ++ mdef.paramss
 
-              params match
+              rightParam match
                 case ValDefs(vparam :: Nil) =>
                   if !vparam.mods.is(Given) then
                     // we merge the extension parameters with the method parameters,
@@ -925,8 +934,10 @@ object desugar {
                     //     def %:[E](f: F)(g: G)(using H): Res = ???
                     // will be encoded as
                     //   def %:[A](using B)[E](f: F)(c: C)(using D)(g: G)(using H): Res = ???
-                    val (leadingUsing, otherExtParamss) = extParamss.span(isUsingOrTypeParamClause)
-                    leadingUsing ::: typaramss ::: params :: otherExtParamss ::: paramss1
+                    //
+                    // If you change the names of the clauses below, also change them in right-associative-extension-methods.md
+                    val (leftTyParamsAndLeadingUsing, leftParamAndTrailingUsing) = extParamss.span(isUsingOrTypeParamClause)
+                    leftTyParamsAndLeadingUsing ::: rightTyParams ::: rightParam :: leftParamAndTrailingUsing ::: paramss1
                   else
                     badRightAssoc("cannot start with using clause")
                 case _ =>
@@ -1138,7 +1149,7 @@ object desugar {
       def errorOnGivenBinding(bind: Bind)(using Context): Boolean =
         report.error(
           em"""${hl("given")} patterns are not allowed in a ${hl("val")} definition,
-              |please bind to an identifier and use an alias given.""".stripMargin, bind)
+              |please bind to an identifier and use an alias given.""", bind)
         false
 
       def isTuplePattern(arity: Int): Boolean = pat match {
@@ -1191,7 +1202,7 @@ object desugar {
             mods & Lazy | Synthetic | (if (ctx.owner.isClass) PrivateLocal else EmptyFlags)
           val firstDef =
             ValDef(tmpName, TypeTree(), matchExpr)
-              .withSpan(pat.span.startPos).withMods(patMods)
+              .withSpan(pat.span.union(rhs.span)).withMods(patMods)
           val useSelectors = vars.length <= 22
           def selector(n: Int) =
             if useSelectors then Select(Ident(tmpName), nme.selectorName(n))
@@ -1238,7 +1249,7 @@ object desugar {
   def checkOpaqueAlias(tree: MemberDef)(using Context): MemberDef =
     def check(rhs: Tree): MemberDef = rhs match
       case bounds: TypeBoundsTree if bounds.alias.isEmpty =>
-        report.error(i"opaque type must have a right-hand side", tree.srcPos)
+        report.error(em"opaque type must have a right-hand side", tree.srcPos)
         tree.withMods(tree.mods.withoutFlags(Opaque))
       case LambdaTypeTree(_, body) => check(body)
       case _ => tree
@@ -1455,7 +1466,10 @@ object desugar {
     val param = makeSyntheticParameter(
       tpt =
         if params.exists(_.tpt.isEmpty) then TypeTree()
-        else Tuple(params.map(_.tpt)))
+        else Tuple(params.map(_.tpt)),
+      flags =
+        if params.nonEmpty && params.head.mods.is(Given) then SyntheticTermParam | Given
+        else SyntheticTermParam)
     def selector(n: Int) =
       if (isGenericTuple) Apply(Select(refOfDef(param), nme.apply), Literal(Constant(n)))
       else Select(refOfDef(param), nme.selectorName(n))
@@ -1504,7 +1518,7 @@ object desugar {
       .withSpan(original.span.withPoint(named.span.start))
 
   /** Main desugaring method */
-  def apply(tree: Tree)(using Context): Tree = {
+  def apply(tree: Tree, pt: Type = NoType)(using Context): Tree = {
 
     /** Create tree for for-comprehension `<for (enums) do body>` or
      *   `<for (enums) yield body>` where mapName and flatMapName are chosen
@@ -1698,11 +1712,11 @@ object desugar {
       }
     }
 
-    def makePolyFunction(targs: List[Tree], body: Tree): Tree = body match {
+    def makePolyFunction(targs: List[Tree], body: Tree, pt: Type): Tree = body match {
       case Parens(body1) =>
-        makePolyFunction(targs, body1)
+        makePolyFunction(targs, body1, pt)
       case Block(Nil, body1) =>
-        makePolyFunction(targs, body1)
+        makePolyFunction(targs, body1, pt)
       case Function(vargs, res) =>
         assert(targs.nonEmpty)
         // TODO: Figure out if we need a `PolyFunctionWithMods` instead.
@@ -1726,12 +1740,26 @@ object desugar {
         }
         else {
           // Desugar [T_1, ..., T_M] -> (x_1: P_1, ..., x_N: P_N) => body
-          // Into    new scala.PolyFunction { def apply[T_1, ..., T_M](x_1: P_1, ..., x_N: P_N) = body }
+          // with pt [S_1, ..., S_M] -> (O_1, ..., O_N) => R
+          // Into    new scala.PolyFunction { def apply[T_1, ..., T_M](x_1: P_1, ..., x_N: P_N): R2 = body }
+          // where R2 is R, with all references to S_1..S_M replaced with T1..T_M.
+
+          def typeTree(tp: Type) = tp match
+            case RefinedType(parent, nme.apply, PolyType(_, mt)) if parent.typeSymbol eq defn.PolyFunctionClass =>
+              var bail = false
+              def mapper(tp: Type, topLevel: Boolean = false): Tree = tp match
+                case tp: TypeRef              => ref(tp)
+                case tp: TypeParamRef         => Ident(applyTParams(tp.paramNum).name)
+                case AppliedType(tycon, args) => AppliedTypeTree(mapper(tycon), args.map(mapper(_)))
+                case _                        => if topLevel then TypeTree() else { bail = true; genericEmptyTree }
+              val mapped = mapper(mt.resultType, topLevel = true)
+              if bail then TypeTree() else mapped
+            case _ => TypeTree()
 
           val applyVParams = vargs.asInstanceOf[List[ValDef]]
             .map(varg => varg.withAddedFlags(mods.flags | Param))
             New(Template(emptyConstructor, List(polyFunctionTpt), Nil, EmptyValDef,
-              List(DefDef(nme.apply, applyTParams :: applyVParams :: Nil, TypeTree(), res))
+              List(DefDef(nme.apply, applyTParams :: applyVParams :: Nil, typeTree(pt), res))
               ))
         }
       case _ =>
@@ -1753,7 +1781,7 @@ object desugar {
 
     val desugared = tree match {
       case PolyFunction(targs, body) =>
-        makePolyFunction(targs, body) orElse tree
+        makePolyFunction(targs, body, pt) orElse tree
       case SymbolLit(str) =>
         Apply(
           ref(defn.ScalaSymbolClass.companionModule.termRef),
@@ -1796,6 +1824,16 @@ object desugar {
         flatTree(pats1 map (makePatDef(tree, mods, _, rhs)))
       case ext: ExtMethods =>
         Block(List(ext), Literal(Constant(())).withSpan(ext.span))
+      case CapturingTypeTree(refs, parent) =>
+        // convert   `{refs} T`   to `T @retains refs`
+        //           `{refs}-> T` to `-> (T @retainsByName refs)`
+        def annotate(annotName: TypeName, tp: Tree) =
+          Annotated(tp, New(scalaAnnotationDot(annotName), List(refs)))
+        parent match
+          case ByNameTypeTree(restpt) =>
+            cpy.ByNameTypeTree(parent)(annotate(tpnme.retainsByName, restpt))
+          case _ =>
+            annotate(tpnme.retains, parent)
     }
     desugared.withSpan(tree.span)
   }
@@ -1932,6 +1970,8 @@ object desugar {
             case _ => traverseChildren(tree)
           }
         }.traverse(expr)
+      case CapturingTypeTree(refs, parent) =>
+        collect(parent)
       case _ =>
     }
     collect(tree)

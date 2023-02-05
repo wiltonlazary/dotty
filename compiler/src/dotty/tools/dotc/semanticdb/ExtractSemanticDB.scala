@@ -24,6 +24,7 @@ import scala.annotation.{ threadUnsafe => tu, tailrec }
 import scala.PartialFunction.condOpt
 
 import dotty.tools.dotc.{semanticdb => s}
+import dotty.tools.io.{AbstractFile, JarArchive}
 
 /** Extract symbol references and uses to semanticdb files.
  *  See https://scalameta.org/docs/semanticdb/specification.html#symbol-1
@@ -38,7 +39,9 @@ class ExtractSemanticDB extends Phase:
   override val description: String = ExtractSemanticDB.description
 
   override def isRunnable(using Context) =
-    super.isRunnable && ctx.settings.Xsemanticdb.value
+    import ExtractSemanticDB.{semanticdbTarget, outputDirectory}
+    def writesToOutputJar = semanticdbTarget.isEmpty && outputDirectory.isInstanceOf[JarArchive]
+    super.isRunnable && ctx.settings.Xsemanticdb.value && !writesToOutputJar
 
   // Check not needed since it does not transform trees
   override def isCheckable: Boolean = false
@@ -81,7 +84,9 @@ class ExtractSemanticDB extends Phase:
     private def excludeDef(sym: Symbol)(using Context): Boolean =
       !sym.exists
       || sym.isLocalDummy
-      || sym.is(Synthetic)
+      // basically do not register synthetic symbols, except anonymous class
+      // `new Foo { ... }`
+      || (sym.is(Synthetic) && !sym.isAnonymousClass)
       || sym.isSetter
       || sym.isOldStyleImplicitConversion(forImplicitClassOnly = true)
       || sym.owner.isGivenInstanceSummoner
@@ -178,7 +183,7 @@ class ExtractSemanticDB extends Phase:
                 if !excludeChildren(tree.symbol) then
                   traverseChildren(tree)
             }
-            if !excludeDef(tree.symbol) && tree.span.hasLength then
+            if !excludeDef(tree.symbol) && (tree.span.hasLength || tree.symbol.isAnonymousClass) then
               registerDefinition(tree.symbol, tree.nameSpan, symbolKinds(tree), tree.source)
               val privateWithin = tree.symbol.privateWithin
               if privateWithin.exists then
@@ -355,7 +360,7 @@ class ExtractSemanticDB extends Phase:
       else
         Span(span.start)
 
-      if namePresentInSource(sym, span, treeSource) then
+      if namePresentInSource(sym, span, treeSource) || sym.isAnonymousClass then
         registerOccurrence(sname, finalSpan, SymbolOccurrence.Role.DEFINITION, treeSource)
       if !sym.is(Package) then
         registerSymbol(sym, symkinds)
@@ -473,6 +478,13 @@ object ExtractSemanticDB:
   val name: String = "extractSemanticDB"
   val description: String = "extract info into .semanticdb files"
 
+  private def semanticdbTarget(using Context): Option[Path] =
+    Option(ctx.settings.semanticdbTarget.value)
+      .filterNot(_.isEmpty)
+      .map(Paths.get(_))
+
+  private def outputDirectory(using Context): AbstractFile = ctx.settings.outputDir.value
+
   def write(
     source: SourceFile,
     occurrences: List[SymbolOccurrence],
@@ -480,14 +492,8 @@ object ExtractSemanticDB:
     synthetics: List[Synthetic],
   )(using Context): Unit =
     def absolutePath(path: Path): Path = path.toAbsolutePath.normalize
-    val semanticdbTarget =
-      val semanticdbTargetSetting = ctx.settings.semanticdbTarget.value
-      absolutePath(
-        if semanticdbTargetSetting.isEmpty then ctx.settings.outputDir.value.jpath
-        else Paths.get(semanticdbTargetSetting)
-      )
     val relPath = SourceFile.relativePath(source, ctx.settings.sourceroot.value)
-    val outpath = semanticdbTarget
+    val outpath = absolutePath(semanticdbTarget.getOrElse(outputDirectory.jpath))
       .resolve("META-INF")
       .resolve("semanticdb")
       .resolve(relPath)

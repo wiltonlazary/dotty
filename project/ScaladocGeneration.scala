@@ -129,6 +129,10 @@ object ScaladocGeneration {
     def key: String = "-usejavacp"
   }
 
+  case class QuickLinks(value: List[String]) extends Arg[List[String]] {
+    def key: String = "-quick-links"
+  }
+
   import _root_.scala.reflect._
 
   trait GenerationConfig {
@@ -137,6 +141,7 @@ object ScaladocGeneration {
     def remove[T <: Arg[_]: ClassTag]: GenerationConfig
     def withTargets(targets: Seq[String]): GenerationConfig
     def serialize: String
+    def settings: Seq[String]
   }
 
   object GenerationConfig {
@@ -168,6 +173,9 @@ object ScaladocGeneration {
         .map(_.serialize)
          ++ targets
       ).mkString(" ")
+
+      override def settings: Seq[String] =
+        args.map(_.serialize) ++ targets
 
       private def argsWithout[T <: Arg[_]](
         implicit tag: ClassTag[T]

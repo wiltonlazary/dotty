@@ -20,7 +20,7 @@ import dotty.tools.dotc.core.Annotations._
 import dotty.tools.dotc.core.StdNames._
 import dotty.tools.dotc.quoted._
 import dotty.tools.dotc.transform.TreeMapWithStages._
-import dotty.tools.dotc.typer.Inliner
+import dotty.tools.dotc.inlines.Inlines
 
 import scala.annotation.constructorOnly
 
@@ -84,10 +84,10 @@ class PickleQuotes extends MacroTransform {
 
   override def checkPostCondition(tree: Tree)(using Context): Unit =
     tree match
-      case tree: RefTree if !Inliner.inInlineMethod =>
+      case tree: RefTree if !Inlines.inInlineMethod =>
         assert(!tree.symbol.isQuote)
         assert(!tree.symbol.isExprSplice)
-      case _ : TypeDef if !Inliner.inInlineMethod =>
+      case _ : TypeDef if !Inlines.inInlineMethod =>
         assert(!tree.symbol.hasAnnotation(defn.QuotedRuntime_SplicedTypeAnnot),
           s"${tree.symbol} should have been removed by PickledQuotes because it has a @quoteTypeTag")
       case _ =>
@@ -101,7 +101,7 @@ class PickleQuotes extends MacroTransform {
         case Apply(Select(Apply(TypeApply(fn, List(tpt)), List(code)),nme.apply), List(quotes))
         if fn.symbol == defn.QuotedRuntime_exprQuote =>
           val (contents, codeWithHoles) = makeHoles(code)
-          val sourceRef = Inliner.inlineCallTrace(ctx.owner, tree.sourcePos)
+          val sourceRef = Inlines.inlineCallTrace(ctx.owner, tree.sourcePos)
           val codeWithHoles2 = Inlined(sourceRef, Nil, codeWithHoles)
           val pickled = PickleQuotes(quotes, codeWithHoles2, contents, tpt.tpe, false)
           transform(pickled) // pickle quotes that are in the contents
@@ -113,12 +113,10 @@ class PickleQuotes extends MacroTransform {
             case _ =>
               val (contents, tptWithHoles) = makeHoles(tpt)
               PickleQuotes(quotes, tptWithHoles, contents, tpt.tpe, true)
-        case tree: DefDef if tree.symbol.is(Macro) =>
+        case tree: DefDef if !tree.rhs.isEmpty && tree.symbol.isInlineMethod =>
           // Shrink size of the tree. The methods have already been inlined.
           // TODO move to FirstTransform to trigger even without quotes
           cpy.DefDef(tree)(rhs = defaultValue(tree.rhs.tpe))
-        case _: DefDef if tree.symbol.isInlineMethod =>
-          tree
         case _ =>
           super.transform(tree)
   }

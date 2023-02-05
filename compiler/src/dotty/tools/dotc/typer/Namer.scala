@@ -17,6 +17,7 @@ import tpd.tpes
 import Variances.alwaysInvariant
 import config.{Config, Feature}
 import config.Printers.typr
+import inlines.{Inlines, PrepareInlineable}
 import parsing.JavaParsers.JavaParser
 import parsing.Parsers.Parser
 import Annotations._
@@ -200,7 +201,7 @@ class Namer { typer: Typer =>
           case tree: MemberDef => SymDenotations.canBeLocal(tree.name, flags)
           case _ => false
         if !ok then
-          report.error(i"modifier(s) `${flags.flagsString}` incompatible with $kind definition", tree.srcPos)
+          report.error(em"modifier(s) `${flags.flagsString}` incompatible with $kind definition", tree.srcPos)
         if adapted.is(Private) && canBeLocal then adapted | Local else adapted
       }
 
@@ -460,8 +461,8 @@ class Namer { typer: Typer =>
         val isProvisional = parents.exists(!_.baseType(defn.AnyClass).exists)
         if isProvisional then
           typr.println(i"provisional superclass $first for $cls")
-          first = AnnotatedType(first, Annotation(defn.ProvisionalSuperClassAnnot))
-        checkFeasibleParent(first, cls.srcPos, em" in inferred superclass $first") :: parents
+          first = AnnotatedType(first, Annotation(defn.ProvisionalSuperClassAnnot, cls.span))
+        checkFeasibleParent(first, cls.srcPos, i" in inferred superclass $first") :: parents
   end ensureFirstIsClass
 
   /** Add child annotation for `child` to annotations of `cls`. The annotation
@@ -477,7 +478,7 @@ class Namer { typer: Typer =>
           if (child == other)
             annots // can happen if a class has several inaccessible children
           else {
-            assert(childStart != other.span.start, i"duplicate child annotation $child / $other")
+            assert(childStart != other.span.start || child.source != other.source, i"duplicate child annotation $child / $other")
             val (prefix, otherAnnot :: rest) = annots.span(_.symbol != defn.ChildAnnot): @unchecked
             prefix ::: otherAnnot :: insertInto(rest)
           }
@@ -761,7 +762,7 @@ class Namer { typer: Typer =>
     }
 
   def missingType(sym: Symbol, modifier: String)(using Context): Unit = {
-    report.error(s"${modifier}type of implicit definition needs to be given explicitly", sym.srcPos)
+    report.error(em"${modifier}type of implicit definition needs to be given explicitly", sym.srcPos)
     sym.resetFlag(GivenOrImplicit)
   }
 
@@ -830,9 +831,9 @@ class Namer { typer: Typer =>
         for (annotTree <- original.mods.annotations) {
           val cls = typedAheadAnnotationClass(annotTree)(using annotCtx)
           if (cls eq sym)
-            report.error("An annotation class cannot be annotated with iself", annotTree.srcPos)
+            report.error(em"An annotation class cannot be annotated with iself", annotTree.srcPos)
           else {
-            val ann = Annotation.deferred(cls)(typedAheadAnnotation(annotTree)(using annotCtx))
+            val ann = Annotation.deferred(cls)(typedAheadExpr(annotTree)(using annotCtx))
             sym.addAnnotation(ann)
           }
         }
@@ -844,7 +845,7 @@ class Namer { typer: Typer =>
         def rhsToInline(using Context): tpd.Tree =
           if !original.symbol.exists && !hasDefinedSymbol(original) then
             throw
-              if sym.isCompleted then Inliner.MissingInlineInfo()
+              if sym.isCompleted then Inlines.MissingInlineInfo()
               else CyclicReference(sym)
           val mdef = typedAheadExpr(original).asInstanceOf[tpd.DefDef]
           PrepareInlineable.wrapRHS(original, mdef.tpt, mdef.rhs)
@@ -905,7 +906,7 @@ class Namer { typer: Typer =>
       if denot.isClass && !sym.isEnumAnonymClass && !sym.isRefinementClass then
         val child = if (denot.is(Module)) denot.sourceModule else denot.symbol
         denot.info.parents.foreach { parent => register(child, parent.classSymbol.asClass) }
-      else if denot.is(CaseVal, butNot = Method | Module) then
+      else if denot.is(CaseVal, butNot = MethodOrModule) then
         assert(denot.is(Enum), denot)
         denot.info.classSymbols.foreach { parent => register(denot.symbol, parent) }
       end if
@@ -1248,7 +1249,7 @@ class Namer { typer: Typer =>
           val reason = mbrs.map(canForward(_, alias)).collect {
             case CanForward.No(whyNot) => i"\n$path.$name cannot be exported because it $whyNot"
           }.headOption.getOrElse("")
-          report.error(i"""no eligible member $name at $path$reason""", ctx.source.atSpan(span))
+          report.error(em"""no eligible member $name at $path$reason""", ctx.source.atSpan(span))
         else
           targets += alias
 
@@ -1313,7 +1314,7 @@ class Namer { typer: Typer =>
                 case _ => 0
               if cmp == 0 then
                 report.error(
-                  ex"""Clashing exports: The exported
+                  em"""Clashing exports: The exported
                       |     ${forwarder.rhs.symbol}: ${alt1.widen}
                       |and  ${forwarder1.rhs.symbol}: ${alt2.widen}
                       |have the same signature after erasure and overloading resolution could not disambiguate.""",
@@ -1436,7 +1437,7 @@ class Namer { typer: Typer =>
         case mt: MethodType if cls.is(Case) && mt.isParamDependent =>
           // See issue #8073 for background
           report.error(
-              i"""Implementation restriction: case classes cannot have dependencies between parameters""",
+              em"""Implementation restriction: case classes cannot have dependencies between parameters""",
               cls.srcPos)
         case _ =>
 
@@ -1617,15 +1618,14 @@ class Namer { typer: Typer =>
   def typedAheadExpr(tree: Tree, pt: Type = WildcardType)(using Context): tpd.Tree =
     typedAhead(tree, typer.typedExpr(_, pt))
 
-  def typedAheadAnnotation(tree: Tree)(using Context): tpd.Tree =
-    typedAheadExpr(tree, defn.AnnotationClass.typeRef)
-
-  def typedAheadAnnotationClass(tree: Tree)(using Context): Symbol = tree match {
+  def typedAheadAnnotationClass(tree: Tree)(using Context): Symbol = tree match
     case Apply(fn, _) => typedAheadAnnotationClass(fn)
     case TypeApply(fn, _) => typedAheadAnnotationClass(fn)
     case Select(qual, nme.CONSTRUCTOR) => typedAheadAnnotationClass(qual)
     case New(tpt) => typedAheadType(tpt).tpe.classSymbol
-  }
+    case TypedSplice(_) =>
+      val sym = tree.symbol
+      if sym.isConstructor then sym.owner else sym
 
   /** Enter and typecheck parameter list */
   def completeParams(params: List[MemberDef])(using Context): Unit = {
@@ -1682,11 +1682,17 @@ class Namer { typer: Typer =>
             // are better ways to achieve this. It would be good if we could get rid of this code.
             // It seems at least partially redundant with the nesting level checking on TypeVar
             // instantiation.
-            if !Config.checkLevels then
+            // It turns out if we fix levels on instantiation we still need this code.
+            // Examples that fail otherwise are pos/scalaz-redux.scala and pos/java-futures.scala.
+            // So fixing levels at instantiation avoids the soundness problem but apparently leads
+            // to type inference problems since it comes too late.
+            if !Config.checkLevelsOnConstraints then
               val hygienicType = TypeOps.avoid(rhsType, termParamss.flatten)
               if (!hygienicType.isValueType || !(hygienicType <:< tpt.tpe))
-                report.error(i"return type ${tpt.tpe} of lambda cannot be made hygienic;\n" +
-                  i"it is not a supertype of the hygienic type $hygienicType", mdef.srcPos)
+                report.error(
+                  em"""return type ${tpt.tpe} of lambda cannot be made hygienic
+                      |it is not a supertype of the hygienic type $hygienicType""",
+                  mdef.srcPos)
             //println(i"lifting $rhsType over $termParamss -> $hygienicType = ${tpt.tpe}")
             //println(TypeComparer.explained { implicit ctx => hygienicType <:< tpt.tpe })
           case _ =>
@@ -1858,7 +1864,7 @@ class Namer { typer: Typer =>
       // so we must allow constraining its type parameters
       // compare with typedDefDef, see tests/pos/gadt-inference.scala
       rhsCtx.setFreshGADTBounds
-      rhsCtx.gadt.addToConstraint(typeParams)
+      rhsCtx.gadtState.addToConstraint(typeParams)
     }
 
     def typedAheadRhs(pt: Type) =
@@ -1877,13 +1883,13 @@ class Namer { typer: Typer =>
         // larger choice of overrides (see `default-getter.scala`).
         // For justification on the use of `@uncheckedVariance`, see
         // `default-getter-variance.scala`.
-        AnnotatedType(defaultTp, Annotation(defn.UncheckedVarianceAnnot))
+        AnnotatedType(defaultTp, Annotation(defn.UncheckedVarianceAnnot, sym.span))
       else
         // don't strip @uncheckedVariance annot for default getters
         TypeOps.simplify(tp.widenTermRefExpr,
             if defaultTp.exists then TypeOps.SimplifyKeepUnchecked() else null) match
           case ctp: ConstantType if sym.isInlineVal => ctp
-          case tp => TypeComparer.widenInferred(tp, pt)
+          case tp => TypeComparer.widenInferred(tp, pt, widenUnions = true)
 
     // Replace aliases to Unit by Unit itself. If we leave the alias in
     // it would be erased to BoxedUnit.

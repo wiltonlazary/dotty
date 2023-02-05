@@ -163,7 +163,7 @@ class PrepJSInterop extends MacroTransform with IdentityDenotTransformer { thisP
           else if (enclosingOwner is OwnerKind.JSType)
             transformValOrDefDefInJSType(tree)
           else
-            super.transform(tree) // There is nothing special to do for a Scala val or def
+            transformScalaValOrDefDef(tree)
       }
     }
 
@@ -186,9 +186,14 @@ class PrepJSInterop extends MacroTransform with IdentityDenotTransformer { thisP
       if (sym == jsdefn.PseudoUnionClass)
         sym.addAnnotation(jsdefn.JSTypeAnnot)
 
-      val kind =
-        if (sym.is(Module)) OwnerKind.ScalaMod
-        else OwnerKind.ScalaClass
+      val kind = if (sym.isSubClass(jsdefn.scalaEnumeration.EnumerationClass)) {
+        if (sym.is(Module)) OwnerKind.EnumMod
+        else if (sym == jsdefn.scalaEnumeration.EnumerationClass) OwnerKind.EnumImpl
+        else OwnerKind.EnumClass
+      } else {
+        if (sym.is(Module)) OwnerKind.NonEnumScalaMod
+        else OwnerKind.NonEnumScalaClass
+      }
       enterOwner(kind) {
         super.transform(tree)
       }
@@ -243,9 +248,9 @@ class PrepJSInterop extends MacroTransform with IdentityDenotTransformer { thisP
           if (tpeSym.isJSType) {
             def reportError(reasonAndExplanation: String): Unit = {
               report.error(
-                  "Using an anonymous function as a SAM for the JavaScript type " +
-                  i"${tpeSym.fullName} is not allowed because " +
-                  reasonAndExplanation,
+                  em"Using an anonymous function as a SAM for the JavaScript type ${
+                     tpeSym.fullName
+                    } is not allowed because $reasonAndExplanation",
                   tree)
             }
             if (!tpeSym.is(Trait) || tpeSym.asClass.superClass != jsdefn.JSFunctionClass) {
@@ -279,6 +284,32 @@ class PrepJSInterop extends MacroTransform with IdentityDenotTransformer { thisP
           val ctorOf = ref(jsdefn.JSPackage_constructorOf).appliedToTypeTree(tpeArg)
           ref(jsdefn.Runtime_newConstructorTag).appliedToType(tpeArg.tpe).appliedTo(ctorOf)
 
+        /* Rewrite js.dynamicImport[T](body) into
+         *
+         * runtime.dynamicImport[T](
+         *   new DynamicImportThunk { def apply(): Any = body }
+         * )
+         */
+        case Apply(TypeApply(fun, List(tpeArg)), List(body))
+            if fun.symbol == jsdefn.JSPackage_dynamicImport =>
+          val span = tree.span
+          val currentOwner = ctx.owner
+
+          assert(currentOwner.isTerm, s"unexpected owner: $currentOwner at ${tree.sourcePos}")
+
+          // new DynamicImportThunk { def apply(): Any = body }
+          val dynamicImportThunkAnonClass = AnonClass(currentOwner, List(jsdefn.DynamicImportThunkType), span) { cls =>
+            val applySym = newSymbol(cls, nme.apply, Method, MethodType(Nil, Nil, defn.AnyType), coord = span).entered
+            val newBody = transform(body).changeOwnerAfter(currentOwner, applySym, thisPhase)
+            val applyDefDef = DefDef(applySym, newBody)
+            List(applyDefDef)
+          }
+
+          // runtime.DynamicImport[A](new ...)
+          ref(jsdefn.Runtime_dynamicImport)
+            .appliedToTypeTree(tpeArg)
+            .appliedTo(dynamicImportThunkAnonClass)
+
         // Compile-time errors and warnings for js.Dynamic.literal
         case Apply(Apply(fun, nameArgs), args)
             if fun.symbol == jsdefn.JSDynamicLiteral_applyDynamic ||
@@ -287,13 +318,45 @@ class PrepJSInterop extends MacroTransform with IdentityDenotTransformer { thisP
           nameArgs match {
             case List(Literal(Constant(s: String))) =>
               if (s != "apply")
-                report.error(i"js.Dynamic.literal does not have a method named $s", tree)
+                report.error(em"js.Dynamic.literal does not have a method named $s", tree)
             case _ =>
-              report.error(i"js.Dynamic.literal.${tree.symbol.name} may not be called directly", tree)
+              report.error(em"js.Dynamic.literal.${tree.symbol.name} may not be called directly", tree)
           }
 
           // TODO Warn for known duplicate property names
 
+          super.transform(tree)
+
+        // Warnings for scala.Enumeration.Value that could not be transformed
+        case _:Ident | _:Select | _:Apply if jsdefn.scalaEnumeration.isValueMethodNoName(tree.symbol) =>
+          report.warning(
+              "Could not transform call to scala.Enumeration.Value.\n" +
+              "The resulting program is unlikely to function properly as this operation requires reflection.",
+              tree)
+          super.transform(tree)
+
+        // Warnings for scala.Enumeration.Value with a `null` name
+        case Apply(_, args) if jsdefn.scalaEnumeration.isValueMethodName(tree.symbol) && isNullLiteral(args.last) =>
+          report.warning(
+              "Passing null as name to scala.Enumeration.Value requires reflection at run-time.\n" +
+              "The resulting program is unlikely to function properly.",
+              tree)
+          super.transform(tree)
+
+        // Warnings for scala.Enumeration.Val without name
+        case _: Apply if jsdefn.scalaEnumeration.isValCtorNoName(tree.symbol) =>
+          report.warning(
+              "Calls to the non-string constructors of scala.Enumeration.Val require reflection at run-time.\n" +
+              "The resulting program is unlikely to function properly.",
+              tree)
+          super.transform(tree)
+
+        // Warnings for scala.Enumeration.Val with a `null` name
+        case Apply(_, args) if jsdefn.scalaEnumeration.isValCtorName(tree.symbol) && isNullLiteral(args.last) =>
+          report.warning(
+              "Passing null as name to a constructor of scala.Enumeration.Val requires reflection at run-time.\n" +
+              "The resulting program is unlikely to function properly.",
+              tree)
           super.transform(tree)
 
         case _: Export =>
@@ -309,12 +372,16 @@ class PrepJSInterop extends MacroTransform with IdentityDenotTransformer { thisP
       }
     }
 
+    private def isNullLiteral(tree: Tree): Boolean = tree match
+      case Literal(Constant(null)) => true
+      case _                       => false
+
     private def validateJSConstructorOf(tree: Tree, tpeArg: Tree)(using Context): Unit = {
       val tpe = checkClassType(tpeArg.tpe, tpeArg.srcPos, traitReq = false, stablePrefixReq = false)
 
       tpe.underlyingClassRef(refinementOK = false) match {
         case typeRef: TypeRef if typeRef.symbol.isOneOf(Trait | ModuleClass) =>
-          report.error(i"non-trait class type required but $tpe found", tpeArg)
+          report.error(em"non-trait class type required but $tpe found", tpeArg)
         case _ =>
           // an error was already reported above
       }
@@ -373,7 +440,7 @@ class PrepJSInterop extends MacroTransform with IdentityDenotTransformer { thisP
              * which is never valid.
              */
             report.error(
-                i"${sym.name} extends ${parentSym.fullName} which does not extend js.Any.",
+                em"${sym.name} extends ${parentSym.fullName} which does not extend js.Any.",
                 classDef)
         }
       }
@@ -435,8 +502,8 @@ class PrepJSInterop extends MacroTransform with IdentityDenotTransformer { thisP
 
           def emitOverrideError(msg: String): Unit = {
             report.error(
-              "error overriding %s;\n  %s %s".format(
-                infoStringWithLocation(overridden), infoString(overriding), msg),
+              em"""error overriding ${infoStringWithLocation(overridden)};
+                  |  ${infoString(overriding)} $msg""",
               errorPos)
           }
 
@@ -492,7 +559,7 @@ class PrepJSInterop extends MacroTransform with IdentityDenotTransformer { thisP
           for (annot <- sym.annotations) {
             val annotSym = annot.symbol
             if (isJSNativeLoadingSpecAnnot(annotSym))
-              report.error(i"Traits may not have an @${annotSym.name} annotation.", annot.tree)
+              report.error(em"Traits may not have an @${annotSym.name} annotation.", annot.tree)
           }
         } else {
           checkJSNativeLoadSpecOf(treePos, sym)
@@ -504,7 +571,7 @@ class PrepJSInterop extends MacroTransform with IdentityDenotTransformer { thisP
 
       def checkGlobalRefName(globalRef: String): Unit = {
         if (!JSGlobalRef.isValidJSGlobalRefName(globalRef))
-          report.error(s"The name of a JS global variable must be a valid JS identifier (got '$globalRef')", pos)
+          report.error(em"The name of a JS global variable must be a valid JS identifier (got '$globalRef')", pos)
       }
 
       if (enclosingOwner is OwnerKind.JSNative) {
@@ -518,7 +585,7 @@ class PrepJSInterop extends MacroTransform with IdentityDenotTransformer { thisP
         for (annot <- sym.annotations) {
           val annotSym = annot.symbol
           if (isJSNativeLoadingSpecAnnot(annotSym))
-            report.error(i"Nested JS classes and objects cannot have an @${annotSym.name} annotation.", annot.tree)
+            report.error(em"Nested JS classes and objects cannot have an @${annotSym.name} annotation.", annot.tree)
         }
 
         if (sym.owner.isStaticOwner) {
@@ -599,6 +666,50 @@ class PrepJSInterop extends MacroTransform with IdentityDenotTransformer { thisP
       }
     }
 
+    /** Transforms a non-`@js.native` ValDef or DefDef in a Scala class. */
+    private def transformScalaValOrDefDef(tree: ValOrDefDef)(using Context): Tree = {
+      tree match {
+        // Catch ValDefs in enumerations with simple calls to Value
+        case vd: ValDef
+            if (enclosingOwner is OwnerKind.Enum) && jsdefn.scalaEnumeration.isValueMethodNoName(vd.rhs.symbol) =>
+          val enumDefn = jsdefn.scalaEnumeration
+
+          // Extract the Int argument if it is present
+          val optIntArg = vd.rhs match {
+            case _:Select | _:Ident      => None
+            case Apply(_, intArg :: Nil) => Some(intArg)
+          }
+
+          val defaultName = vd.name.getterName.encode.toString
+
+          /* Construct the following tree
+           *
+           *   if (nextName != null && nextName.hasNext)
+           *     nextName.next()
+           *   else
+           *     <defaultName>
+           */
+          val thisClass = vd.symbol.owner.asClass
+          val nextNameTree = This(thisClass).select(enumDefn.Enumeration_nextName)
+          val nullCompTree = nextNameTree.select(nme.NE).appliedTo(Literal(Constant(null)))
+          val hasNextTree = nextNameTree.select(enumDefn.hasNext)
+          val condTree = nullCompTree.select(nme.ZAND).appliedTo(hasNextTree)
+          val nameTree = If(condTree, nextNameTree.select(enumDefn.next).appliedToNone, Literal(Constant(defaultName)))
+
+          val newRhs = optIntArg match {
+            case None =>
+              This(thisClass).select(enumDefn.Enumeration_Value_StringArg).appliedTo(nameTree)
+            case Some(intArg) =>
+              This(thisClass).select(enumDefn.Enumeration_Value_IntStringArg).appliedTo(intArg, nameTree)
+          }
+
+          cpy.ValDef(vd)(rhs = newRhs)
+
+        case _ =>
+          super.transform(tree)
+      }
+    }
+
     /** Verify a ValOrDefDef that is annotated with `@js.native`. */
     private def transformJSNativeValOrDefDef(tree: ValOrDefDef)(using Context): ValOrDefDef = {
       val sym = tree.symbol
@@ -620,7 +731,7 @@ class PrepJSInterop extends MacroTransform with IdentityDenotTransformer { thisP
       if (overriddenSymbols.hasNext) {
         val overridden = overriddenSymbols.next()
         val verb = if (overridden.is(Deferred)) "implement" else "override"
-        report.error(i"An @js.native member cannot $verb the inherited member ${overridden.fullName}", tree)
+        report.error(em"An @js.native member cannot $verb the inherited member ${overridden.fullName}", tree)
       }
 
       tree
@@ -777,6 +888,9 @@ class PrepJSInterop extends MacroTransform with IdentityDenotTransformer { thisP
             report.error("A non-native JS trait cannot contain private members", tree)
           } else if (sym.is(Lazy)) {
             report.error("A non-native JS trait cannot contain lazy vals", tree)
+          } else if (sym.is(ParamAccessor)) {
+            // #12621
+            report.error("A non-native JS trait cannot have constructor parameters", tree)
           } else if (!sym.is(Deferred)) {
             /* Tell the back-end not to emit this thing. In fact, this only
              * matters for mixed-in members created from this member.
@@ -863,15 +977,17 @@ class PrepJSInterop extends MacroTransform with IdentityDenotTransformer { thisP
       tree.rhs match {
         case sel: Select if sel.symbol == jsdefn.JSPackage_native =>
           // ok
+        case rhs: Ident if rhs.symbol == jsdefn.JSPackage_native =>
+          // ok
         case _ =>
           val pos = if (tree.rhs != EmptyTree) tree.rhs.srcPos else tree.srcPos
           report.error(s"$longKindStr may only call js.native.", pos)
       }
 
-      // Check that the resul type was explicitly specified
+      // Check that the result type was explicitly specified
       // (This is stronger than Scala 2, which only warns, and only if it was inferred as Nothing.)
-      if (tree.tpt.span.isSynthetic)
-        report.error(i"The type of ${tree.name} must be explicitly specified because it is JS native.", tree)
+      if (tree.tpt.isInstanceOf[InferredTypeTree])
+        report.error(em"The type of ${tree.name} must be explicitly specified because it is JS native.", tree)
     }
 
     private def checkJSNativeSpecificAnnotsOnNonJSNative(memberDef: MemberDef)(using Context): Unit = {
@@ -1029,9 +1145,9 @@ object PrepJSInterop {
     // Base kinds - those form a partition of all possible enclosing owners
 
     /** A Scala class/trait. */
-    val ScalaClass = new OwnerKind(0x01)
+    val NonEnumScalaClass = new OwnerKind(0x01)
     /** A Scala object. */
-    val ScalaMod = new OwnerKind(0x02)
+    val NonEnumScalaMod = new OwnerKind(0x02)
     /** A native JS class/trait, which extends js.Any. */
     val JSNativeClass = new OwnerKind(0x04)
     /** A native JS object, which extends js.Any. */
@@ -1042,11 +1158,25 @@ object PrepJSInterop {
     val JSTrait = new OwnerKind(0x20)
     /** A non-native JS object. */
     val JSMod = new OwnerKind(0x40)
+    /** A Scala class/trait that extends Enumeration. */
+    val EnumClass = new OwnerKind(0x80)
+    /** A Scala object that extends Enumeration. */
+    val EnumMod = new OwnerKind(0x100)
+    /** The Enumeration class itself. */
+    val EnumImpl = new OwnerKind(0x200)
 
     // Compound kinds
 
+    /** A Scala class/trait, possibly Enumeration-related. */
+    val ScalaClass = NonEnumScalaClass | EnumClass | EnumImpl
+    /** A Scala object, possibly Enumeration-related. */
+    val ScalaMod = NonEnumScalaMod | EnumMod
+
     /** A Scala class, trait or object, i.e., anything not extending js.Any. */
     val ScalaType = ScalaClass | ScalaMod
+
+    /** A Scala class/trait/object extending Enumeration, but not Enumeration itself. */
+    val Enum = EnumClass | EnumMod
 
     /** A native JS class/trait/object. */
     val JSNative = JSNativeClass | JSNativeMod
@@ -1194,7 +1324,7 @@ object PrepJSInterop {
     for (annotation <- sym.annotations) {
       if (isCompilerAnnotation(annotation)) {
         report.error(
-            i"@${annotation.symbol.fullName} is for compiler internal use only. Do not use it yourself.",
+            em"@${annotation.symbol.fullName} is for compiler internal use only. Do not use it yourself.",
             annotation.tree)
       }
     }

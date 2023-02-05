@@ -12,11 +12,12 @@ import org.junit.experimental.categories.Category
 import java.io.File
 import java.nio.file._
 import java.util.stream.{ Stream => JStream }
-import scala.collection.JavaConverters._
+import scala.jdk.CollectionConverters._
 import scala.util.matching.Regex
 import scala.concurrent.duration._
 import TestSources.sources
 import vulpix._
+import reporting.TestReporter
 
 class TastyBootstrapTests {
   import ParallelTesting._
@@ -114,6 +115,7 @@ object TastyBootstrapTests extends ParallelTesting {
   def isInteractive = SummaryReport.isInteractive
   def testFilter = Properties.testsFilter
   def updateCheckFiles: Boolean = Properties.testsUpdateCheckfile
+  def failedTests = TestReporter.lastRunFailedTests
 
   implicit val summaryReport: SummaryReporting = new SummaryReport
   @AfterClass def tearDown(): Unit = {

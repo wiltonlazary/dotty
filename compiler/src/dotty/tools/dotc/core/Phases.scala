@@ -14,9 +14,11 @@ import dotty.tools.dotc.transform.MegaPhase._
 import dotty.tools.dotc.transform._
 import Periods._
 import parsing.Parser
+import printing.XprintMode
 import typer.{TyperPhase, RefChecks}
+import cc.CheckCaptures
 import typer.ImportInfo.withRootImports
-import ast.tpd
+import ast.{tpd, untpd}
 import scala.annotation.internal.sharable
 import scala.util.control.NonFatal
 
@@ -195,6 +197,14 @@ object Phases {
       config.println(s"nextDenotTransformerId = ${nextDenotTransformerId.toList}")
     }
 
+    /** Unlink `phase` from Denot transformer chain. This means that
+     *  any denotation transformer defined by the phase will not be executed.
+     */
+    def unlinkPhaseAsDenotTransformer(phase: Phase)(using Context) =
+      for i <- 0 until nextDenotTransformerId.length do
+        if nextDenotTransformerId(i) == phase.id then
+          nextDenotTransformerId(i) = nextDenotTransformerId(phase.id + 1)
+
     private var myParserPhase: Phase = _
     private var myTyperPhase: Phase = _
     private var myPostTyperPhase: Phase = _
@@ -217,6 +227,7 @@ object Phases {
     private var myCountOuterAccessesPhase: Phase = _
     private var myFlattenPhase: Phase = _
     private var myGenBCodePhase: Phase = _
+    private var myCheckCapturesPhase: Phase = _
 
     final def parserPhase: Phase = myParserPhase
     final def typerPhase: Phase = myTyperPhase
@@ -240,6 +251,7 @@ object Phases {
     final def countOuterAccessesPhase = myCountOuterAccessesPhase
     final def flattenPhase: Phase = myFlattenPhase
     final def genBCodePhase: Phase = myGenBCodePhase
+    final def checkCapturesPhase: Phase = myCheckCapturesPhase
 
     private def setSpecificPhases() = {
       def phaseOfClass(pclass: Class[?]) = phases.find(pclass.isInstance).getOrElse(NoPhase)
@@ -265,7 +277,8 @@ object Phases {
       myFlattenPhase = phaseOfClass(classOf[Flatten])
       myExplicitOuterPhase = phaseOfClass(classOf[ExplicitOuter])
       myGettersPhase = phaseOfClass(classOf[Getters])
-      myGenBCodePhase =  phaseOfClass(classOf[GenBCode])
+      myGenBCodePhase = phaseOfClass(classOf[GenBCode])
+      myCheckCapturesPhase = phaseOfClass(classOf[CheckCaptures])
     }
 
     final def isAfterTyper(phase: Phase): Boolean = phase.id > typerPhase.id
@@ -308,9 +321,16 @@ object Phases {
     def runOn(units: List[CompilationUnit])(using Context): List[CompilationUnit] =
       units.map { unit =>
         val unitCtx = ctx.fresh.setPhase(this.start).setCompilationUnit(unit).withRootImports
-        run(using unitCtx)
+        try run(using unitCtx)
+        catch case ex: Throwable =>
+          println(s"$ex while running $phaseName on $unit")
+          throw ex
         unitCtx.compilationUnit
       }
+
+    /** Convert a compilation unit's tree to a string; can be overridden */
+    def show(tree: untpd.Tree)(using Context): String =
+      tree.show(using ctx.withProperty(XprintMode, Some(())))
 
     def description: String = phaseName
 
@@ -442,6 +462,7 @@ object Phases {
   def lambdaLiftPhase(using Context): Phase             = ctx.base.lambdaLiftPhase
   def flattenPhase(using Context): Phase                = ctx.base.flattenPhase
   def genBCodePhase(using Context): Phase               = ctx.base.genBCodePhase
+  def checkCapturesPhase(using Context): Phase          = ctx.base.checkCapturesPhase
 
   def unfusedPhases(using Context): Array[Phase] = ctx.base.phases
 

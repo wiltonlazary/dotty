@@ -234,7 +234,7 @@ trait PatternTypeConstrainer { self: TypeComparer =>
     def refinementIsInvariant(tp: Type): Boolean = tp match {
       case tp: SingletonType => true
       case tp: ClassInfo => tp.cls.is(Final) || tp.cls.is(Case)
-      case tp: TypeProxy => refinementIsInvariant(tp.underlying)
+      case tp: TypeProxy => refinementIsInvariant(tp.superType)
       case _ => false
     }
 
@@ -261,29 +261,30 @@ trait PatternTypeConstrainer { self: TypeComparer =>
     val assumeInvariantRefinement =
       migrateTo3 || forceInvariantRefinement || refinementIsInvariant(patternTp)
 
-    trace(i"constraining simple pattern type $tp >:< $pt", gadts, res => s"$res\ngadt = ${ctx.gadt.debugBoundsDescription}") {
+    trace(i"constraining simple pattern type $tp >:< $pt", gadts, (res: Boolean) => i"$res gadt = ${ctx.gadt}") {
       (tp, pt) match {
         case (AppliedType(tyconS, argsS), AppliedType(tyconP, argsP)) =>
           val saved = state.nn.constraint
-          val savedGadt = ctx.gadt.fresh
           val result =
-            tyconS.typeParams.lazyZip(argsS).lazyZip(argsP).forall { (param, argS, argP) =>
-              val variance = param.paramVarianceSign
-              if variance == 0 || assumeInvariantRefinement ||
-                // As a special case, when pattern and scrutinee types have the same type constructor,
-                // we infer better bounds for pattern-bound abstract types.
-                argP.typeSymbol.isPatternBound && patternTp.classSymbol == scrutineeTp.classSymbol
-              then
-                val TypeBounds(loS, hiS) = argS.bounds
-                var res = true
-                if variance <  1 then res &&= isSubType(loS, argP)
-                if variance > -1 then res &&= isSubType(argP, hiS)
-                res
-              else true
+            ctx.gadtState.rollbackGadtUnless {
+              tyconS.typeParams.lazyZip(argsS).lazyZip(argsP).forall { (param, argS, argP) =>
+                val variance = param.paramVarianceSign
+                if variance == 0 || assumeInvariantRefinement ||
+                  // As a special case, when pattern and scrutinee types have the same type constructor,
+                  // we infer better bounds for pattern-bound abstract types.
+                  argP.typeSymbol.isPatternBound && patternTp.classSymbol == scrutineeTp.classSymbol
+                then
+                  val TypeBounds(loS, hiS) = argS.bounds
+                  val TypeBounds(loP, hiP) = argP.bounds
+                  var res = true
+                  if variance <  1 then res &&= isSubType(loS, hiP)
+                  if variance > -1 then res &&= isSubType(loP, hiS)
+                  res
+                else true
+              }
             }
           if !result then
             constraint = saved
-            ctx.gadt.restore(savedGadt)
           result
         case _ =>
           // Give up if we don't get AppliedType, e.g. if we upcasted to Any.

@@ -11,7 +11,10 @@ import Constants._
 import util.{Stats, SimpleIdentityMap, SimpleIdentitySet}
 import Decorators._
 import Uniques._
+import inlines.Inlines
 import config.Printers.typr
+import Inferencing.*
+import ErrorReporting.*
 import util.SourceFile
 import TypeComparer.necessarySubType
 
@@ -109,7 +112,7 @@ object ProtoTypes {
      *  achieved by replacing expected type parameters with wildcards.
      */
     def constrainResult(meth: Symbol, mt: Type, pt: Type)(using Context): Boolean =
-      if (Inliner.isInlineable(meth)) {
+      if (Inlines.isInlineable(meth)) {
         constrainResult(mt, wildApprox(pt))
         true
       }
@@ -130,9 +133,17 @@ object ProtoTypes {
 
   /** A class marking ignored prototypes that can be revealed by `deepenProto` */
   abstract case class IgnoredProto(ignored: Type) extends CachedGroundType with MatchAlways:
+    private var myWasDeepened = false
     override def revealIgnored = ignored
-    override def deepenProto(using Context): Type = ignored
+    override def deepenProto(using Context): Type =
+      myWasDeepened = true
+      ignored
     override def deepenProtoTrans(using Context): Type = ignored.deepenProtoTrans
+
+    /** Did someone look inside via deepenProto? Used for error deagniostics
+     *  to give a more extensive expected type.
+     */
+    def wasDeepened: Boolean = myWasDeepened
 
     override def computeHash(bs: Hashable.Binders): Int = doHash(bs, ignored)
 
@@ -188,20 +199,33 @@ object ProtoTypes {
       case _ => false
 
     override def isMatchedBy(tp1: Type, keepConstraint: Boolean)(using Context): Boolean =
-      name == nme.WILDCARD || hasUnknownMembers(tp1) ||
-      {
-        val mbr = if (privateOK) tp1.member(name) else tp1.nonPrivateMember(name)
-        def qualifies(m: SingleDenotation) =
-          val isAccessible = !m.symbol.exists || m.symbol.isAccessibleFrom(tp1, superAccess = true)
-          isAccessible
-          && (memberProto.isRef(defn.UnitClass)
-             || tp1.isValueType && compat.normalizedCompatible(NamedType(tp1, name, m), memberProto, keepConstraint))
-              // Note: can't use `m.info` here because if `m` is a method, `m.info`
-              //       loses knowledge about `m`'s default arguments.
-        mbr match { // hasAltWith inlined for performance
-          case mbr: SingleDenotation => mbr.exists && qualifies(mbr)
-          case _ => mbr hasAltWith qualifies
-        }
+      name == nme.WILDCARD
+      || hasUnknownMembers(tp1)
+      || {
+        try
+          val mbr = if privateOK then tp1.member(name) else tp1.nonPrivateMember(name)
+          def qualifies(m: SingleDenotation) =
+            val isAccessible = !m.symbol.exists || m.symbol.isAccessibleFrom(tp1, superAccess = true)
+            isAccessible
+            && (memberProto.isRef(defn.UnitClass)
+              || tp1.isValueType && compat.normalizedCompatible(NamedType(tp1, name, m), memberProto, keepConstraint))
+                // Note: can't use `m.info` here because if `m` is a method, `m.info`
+                //       loses knowledge about `m`'s default arguments.
+          mbr match // hasAltWith inlined for performance
+            case mbr: SingleDenotation => mbr.exists && qualifies(mbr)
+            case _ => mbr hasAltWith qualifies
+        catch case ex: TypeError =>
+          // A scenario where this can happen is in pos/15673.scala:
+          // We have a type `CC[A]#C` where `CC`'s upper bound is `[X] => Any`, but
+          // the current constraint stipulates CC <: SeqOps[...], where `SeqOps` defines
+          // the `C` parameter. We try to resolve this using `argDenot` but `argDenot`
+          // consults the base type of `CC`, which is not `SeqOps`, so it does not
+          // find a corresponding argument. In fact, `argDenot` is not allowed to
+          // consult short-lived things like the current constraint, so it has no other
+          // choice. The problem will be healed later, when normal selection fails
+          // and we try to instantiate type variables to compensate. But we have to make
+          // sure we do not issue a type error before we get there.
+          false
       }
 
     def underlying(using Context): Type = WildcardType
@@ -272,6 +296,8 @@ object ProtoTypes {
    *  @see checkValue
    */
   @sharable object AnySelectionProto extends SelectionProto(nme.WILDCARD, WildcardType, NoViewsAllowed, true)
+
+  @sharable object SingletonTypeProto extends SelectionProto(nme.WILDCARD, WildcardType, NoViewsAllowed, true)
 
   /** A prototype for selections in pattern constructors */
   class UnapplySelectionProto(name: Name) extends SelectionProto(name, WildcardType, NoViewsAllowed, true)
@@ -468,7 +494,21 @@ object ProtoTypes {
       val targ = cacheTypedArg(arg,
         typer.typedUnadapted(_, wideFormal, locked)(using argCtx),
         force = true)
-      typer.adapt(targ, wideFormal, locked)
+      val targ1 = typer.adapt(targ, wideFormal, locked)
+      if wideFormal eq formal then targ1
+      else checkNoWildcardCaptureForCBN(targ1)
+    }
+
+    def checkNoWildcardCaptureForCBN(targ1: Tree)(using Context): Tree = {
+      if hasCaptureConversionArg(targ1.tpe) then
+        val tp = stripCast(targ1).tpe
+        errorTree(targ1,
+          em"""argument for by-name parameter is not a value
+              |and contains wildcard arguments: $tp
+              |
+              |Assign it to a val and pass that instead.
+              |""")
+      else targ1
     }
 
     /** The type of the argument `arg`, or `NoType` if `arg` has not been typed before
@@ -647,10 +687,12 @@ object ProtoTypes {
    *
    *    [] _
    */
-  @sharable object AnyFunctionProto extends UncachedGroundType with MatchAlways
+  @sharable object AnyFunctionProto extends UncachedGroundType with MatchAlways:
+    override def toString = "AnyFunctionProto"
 
   /** A prototype for type constructors that are followed by a type application */
-  @sharable object AnyTypeConstructorProto extends UncachedGroundType with MatchAlways
+  @sharable object AnyTypeConstructorProto extends UncachedGroundType with MatchAlways:
+    override def toString = "AnyTypeConstructorProto"
 
   extension (pt: Type)
     def isExtensionApplyProto: Boolean = pt match
@@ -808,17 +850,23 @@ object ProtoTypes {
   /** Approximate occurrences of parameter types and uninstantiated typevars
    *  by wildcard types.
    */
-  private def wildApprox(tp: Type, theMap: WildApproxMap | Null, seen: Set[TypeParamRef], internal: Set[TypeLambda])(using Context): Type = tp match {
+  private def wildApprox(tp: Type, theMap: WildApproxMap | Null, seen: Set[TypeParamRef], internal: Set[TypeLambda])(using Context): Type =
+    tp match {
     case tp: NamedType => // default case, inlined for speed
       val isPatternBoundTypeRef = tp.isInstanceOf[TypeRef] && tp.symbol.isPatternBound
       if (isPatternBoundTypeRef) WildcardType(tp.underlying.bounds)
       else if (tp.symbol.isStatic || (tp.prefix `eq` NoPrefix)) tp
       else tp.derivedSelect(wildApprox(tp.prefix, theMap, seen, internal))
     case tp @ AppliedType(tycon, args) =>
+      def wildArgs = args.mapConserve(arg => wildApprox(arg, theMap, seen, internal))
       wildApprox(tycon, theMap, seen, internal) match {
-        case _: WildcardType => WildcardType // this ensures we get a * type
-        case tycon1 => tp.derivedAppliedType(tycon1,
-          args.mapConserve(arg => wildApprox(arg, theMap, seen, internal)))
+        case WildcardType(TypeBounds(lo, hi)) if hi.typeParams.hasSameLengthAs(args) =>
+          val args1 = wildArgs
+          val lo1 = if lo.typeParams.hasSameLengthAs(args) then lo.appliedTo(args1) else lo
+          WildcardType(TypeBounds(lo1, hi.appliedTo(args1)))
+        case WildcardType(_) =>
+          WildcardType
+        case tycon1 => tp.derivedAppliedType(tycon1, wildArgs)
       }
     case tp: RefinedType => // default case, inlined for speed
       tp.derivedRefinedType(
@@ -916,8 +964,8 @@ object ProtoTypes {
   object dummyTreeOfType {
     def apply(tp: Type)(implicit src: SourceFile): Tree =
       untpd.Literal(Constant(null)) withTypeUnchecked tp
-    def unapply(tree: untpd.Tree): Option[Type] = tree match {
-      case Literal(Constant(null)) => Some(tree.typeOpt)
+    def unapply(tree: untpd.Tree): Option[Type] = untpd.unsplice(tree) match {
+      case tree @ Literal(Constant(null)) => Some(tree.typeOpt)
       case _ => None
     }
   }

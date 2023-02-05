@@ -53,7 +53,7 @@ The correct way to write `E` is to extend both `Greeting` and
 class E extends Greeting("Bob"), FormalGreeting
 ```
 
-### Traits With Context Parameters
+## Traits With Context Parameters
 
 This "explicit extension required" rule is relaxed if the missing trait contains only
 [context parameters](../contextual/using-clauses.md). In that case the trait reference is
@@ -79,7 +79,7 @@ The definition of `F` in the last line is implicitly expanded to
 class F(using iname: ImpliedName) extends
   Object,
   ImpliedGreeting(using iname),
-  ImpliedFormalGreeting(using iname)
+  ImpliedFormalGreeting
 ```
 Note the inserted reference to the super trait `ImpliedGreeting`, which was not mentioned explicitly.
 

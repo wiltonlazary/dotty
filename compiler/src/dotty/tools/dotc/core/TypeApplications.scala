@@ -9,8 +9,9 @@ import SymDenotations.LazyType
 import Decorators._
 import util.Stats._
 import Names._
-import Flags.Module
+import Flags.{Module, Provisional}
 import dotty.tools.dotc.config.Config
+import cc.boxedUnlessFun
 
 object TypeApplications {
 
@@ -203,6 +204,12 @@ class TypeApplications(val self: Type) extends AnyVal {
     }
   }
 
+  /** Substitute in `self` the type parameters of `tycon` by some other types. */
+  final def substTypeParams(tycon: Type, to: List[Type])(using Context): Type =
+    (tycon.typeParams: @unchecked) match
+      case LambdaParam(lam, _) :: _ => self.substParams(lam, to)
+      case params: List[Symbol @unchecked] => self.subst(params, to)
+
   /** If `self` is a higher-kinded type, its type parameters, otherwise Nil */
   final def hkTypeParams(using Context): List[TypeParamInfo] =
     if (isLambdaSub) typeParams else Nil
@@ -284,7 +291,8 @@ class TypeApplications(val self: Type) extends AnyVal {
 
   /** Dealias type if it can be done without forcing the TypeRef's info */
   def safeDealias(using Context): Type = self match {
-    case self: TypeRef if self.denot.exists && self.symbol.isAliasType =>
+    case self: TypeRef
+    if self.denot.exists && self.symbol.isAliasType && !self.symbol.isProvisional =>
       self.superType.stripTypeVar.safeDealias
     case _ =>
       self
@@ -344,7 +352,7 @@ class TypeApplications(val self: Type) extends AnyVal {
             }
             if ((dealiased eq stripped) || followAlias)
               try
-                val instantiated = dealiased.instantiate(args)
+                val instantiated = dealiased.instantiate(args.mapConserve(_.boxedUnlessFun(self)))
                 if (followAlias) instantiated.normalized else instantiated
               catch
                 case ex: IndexOutOfBoundsException =>
@@ -491,10 +499,9 @@ class TypeApplications(val self: Type) extends AnyVal {
    *  otherwise return Nil.
    *  Existential types in arguments are returned as TypeBounds instances.
    */
-  final def argInfos(using Context): List[Type] = self.stripped match {
-    case AppliedType(tycon, args) => args
+  final def argInfos(using Context): List[Type] = self.stripped match
+    case AppliedType(tycon, args) => args.boxedUnlessFun(tycon)
     case _ => Nil
-  }
 
   /** Argument types where existential types in arguments are disallowed */
   def argTypes(using Context): List[Type] = argInfos mapConserve noBounds
@@ -526,6 +533,9 @@ class TypeApplications(val self: Type) extends AnyVal {
     case JavaArrayType(elemtp) => elemtp
     case tp: OrType if tp.tp1.isBottomType => tp.tp2.elemType
     case tp: OrType if tp.tp2.isBottomType => tp.tp1.elemType
-    case _ => self.baseType(defn.SeqClass).argInfos.headOption.getOrElse(NoType)
+    case _ =>
+      self.baseType(defn.SeqClass)
+      .orElse(self.baseType(defn.ArrayClass))
+      .argInfos.headOption.getOrElse(NoType)
   }
 }

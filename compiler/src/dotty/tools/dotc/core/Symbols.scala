@@ -103,7 +103,7 @@ object Symbols {
     /** The current denotation of this symbol */
     final def denot(using Context): SymDenotation = {
       util.Stats.record("Symbol.denot")
-      if (checkedPeriod == ctx.period) lastDenot
+      if checkedPeriod.code == ctx.period.code then lastDenot
       else computeDenot(lastDenot)
     }
 
@@ -348,6 +348,27 @@ object Symbols {
     def paramVariance(using Context): Variance = denot.variance
     def paramRef(using Context): TypeRef = denot.typeRef
 
+    /** Copy a symbol, overriding selective fields.
+     *  Note that `coord` and `associatedFile` will be set from the fields in `owner`, not
+     *  the fields in `sym`. */
+    def copy(using Context)(
+        owner: Symbol = this.owner,
+        name: ThisName = name,
+        flags: FlagSet = this.flags,
+        info: Type = this.info,
+        privateWithin: Symbol = this.privateWithin,
+        coord: Coord = NoCoord, // Can be `= owner.coord` once we bootstrap
+        associatedFile: AbstractFile | Null = null // Can be `= owner.associatedFile` once we bootstrap
+    ): Symbol = {
+      val coord1 = if (coord == NoCoord) owner.coord else coord
+      val associatedFile1 = if (associatedFile == null) owner.associatedFile else associatedFile
+
+      if isClass then
+        newClassSymbol(owner, name.asTypeName, flags, _ => info, privateWithin, coord1, associatedFile1)
+      else
+        newSymbol(owner, name, flags, info, privateWithin, coord1)
+    }
+
 // -------- Printing --------------------------------------------------------
 
     /** The prefix string to be used when displaying this symbol without denotation */
@@ -468,30 +489,6 @@ object Symbols {
   }
 
   NoDenotation // force it in order to set `denot` field of NoSymbol
-
-  extension [N <: Name](sym: Symbol { type ThisName = N })(using Context) {
-    /** Copy a symbol, overriding selective fields.
-     *  Note that `coord` and `associatedFile` will be set from the fields in `owner`, not
-     *  the fields in `sym`.
-     */
-    def copy(
-        owner: Symbol = sym.owner,
-        name: N = sym.name,
-        flags: FlagSet = sym.flags,
-        info: Type = sym.info,
-        privateWithin: Symbol = sym.privateWithin,
-        coord: Coord = NoCoord, // Can be `= owner.coord` once we bootstrap
-        associatedFile: AbstractFile | Null = null // Can be `= owner.associatedFile` once we bootstrap
-    ): Symbol = {
-      val coord1 = if (coord == NoCoord) owner.coord else coord
-      val associatedFile1 = if (associatedFile == null) owner.associatedFile else associatedFile
-
-      if (sym.isClass)
-        newClassSymbol(owner, name.asTypeName, flags, _ => info, privateWithin, coord1, associatedFile1)
-      else
-        newSymbol(owner, name, flags, info, privateWithin, coord1)
-    }
-  }
 
   /** Makes all denotation operations available on symbols */
   implicit def toDenot(sym: Symbol)(using Context): SymDenotation = sym.denot
@@ -633,6 +630,32 @@ object Symbols {
           owner.thisType, modcls, parents, decls, TermRef(owner.thisType, module)),
         privateWithin, coord, assocFile)
 
+  /** Same as `newCompleteModuleSymbol` except that `parents` can be a list of arbitrary
+   *  types which get normalized into type refs and parameter bindings.
+   */
+  def newNormalizedModuleSymbol(
+      owner: Symbol,
+      name: TermName,
+      modFlags: FlagSet,
+      clsFlags: FlagSet,
+      parentTypes: List[Type],
+      decls: Scope,
+      privateWithin: Symbol = NoSymbol,
+      coord: Coord = NoCoord,
+      assocFile: AbstractFile | Null = null)(using Context): TermSymbol = {
+    def completer(module: Symbol) = new LazyType {
+      def complete(denot: SymDenotation)(using Context): Unit = {
+        val cls = denot.asClass.classSymbol
+        val decls = newScope
+        denot.info = ClassInfo(owner.thisType, cls, parentTypes.map(_.dealias), decls, TermRef(owner.thisType, module))
+      }
+    }
+    newModuleSymbol(
+        owner, name, modFlags, clsFlags,
+        (module, modcls) => completer(module),
+        privateWithin, coord, assocFile)
+  }
+
   /** Create a package symbol with associated package class
    *  from its non-info fields and a lazy type for loading the package's members.
    */
@@ -663,7 +686,7 @@ object Symbols {
       addToGadt: Boolean = true,
       flags: FlagSet = EmptyFlags)(using Context): Symbol = {
     val sym = newSymbol(ctx.owner, name, Case | flags, info, coord = span)
-    if (addToGadt && name.isTypeName) ctx.gadt.addToConstraint(sym)
+    if (addToGadt && name.isTypeName) ctx.gadtState.addToConstraint(sym)
     sym
   }
 

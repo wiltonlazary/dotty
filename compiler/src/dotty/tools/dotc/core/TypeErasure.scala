@@ -328,6 +328,9 @@ object TypeErasure {
         isGenericArrayElement(tp.alias, isScala2)
       case tp: TypeBounds =>
         !fitsInJVMArray(tp.hi)
+      case tp: MatchType =>
+        val alts = tp.alternatives
+        alts.nonEmpty && !fitsInJVMArray(alts.reduce(OrType(_, _, soft = true)))
       case tp: TypeProxy =>
         isGenericArrayElement(tp.translucentSuperType, isScala2)
       case tp: AndType =>
@@ -517,8 +520,9 @@ object TypeErasure {
         case _: ClassInfo => true
         case _ => false
       }
-    case tp: TypeParamRef => false
-    case tp: TypeBounds => false
+    case _: TypeParamRef => false
+    case _: TypeBounds => false
+    case _: MatchType => false
     case tp: TypeProxy => hasStableErasure(tp.translucentSuperType)
     case tp: AndType => hasStableErasure(tp.tp1) && hasStableErasure(tp.tp2)
     case tp: OrType  => hasStableErasure(tp.tp1) && hasStableErasure(tp.tp2)
@@ -588,9 +592,9 @@ class TypeErasure(sourceLanguage: SourceLanguage, semiEraseVCs: Boolean, isConst
       tp
     case tp: TypeRef =>
       val sym = tp.symbol
-      if (!sym.isClass) this(tp.translucentSuperType)
-      else if (semiEraseVCs && isDerivedValueClass(sym)) eraseDerivedValueClass(tp)
-      else if (defn.isSyntheticFunctionClass(sym)) defn.functionTypeErasure(sym)
+      if !sym.isClass then this(checkedSuperType(tp))
+      else if semiEraseVCs && isDerivedValueClass(sym) then eraseDerivedValueClass(tp)
+      else if defn.isSyntheticFunctionClass(sym) then defn.functionTypeErasure(sym)
       else eraseNormalClassRef(tp)
     case tp: AppliedType =>
       val tycon = tp.tycon
@@ -598,8 +602,10 @@ class TypeErasure(sourceLanguage: SourceLanguage, semiEraseVCs: Boolean, isConst
       else if (tycon.isRef(defn.PairClass)) erasePair(tp)
       else if (tp.isRepeatedParam) apply(tp.translateFromRepeated(toArray = sourceLanguage.isJava))
       else if (semiEraseVCs && isDerivedValueClass(tycon.classSymbol)) eraseDerivedValueClass(tp)
-      else apply(tp.translucentSuperType)
-    case _: TermRef | _: ThisType =>
+      else this(checkedSuperType(tp))
+    case tp: TermRef =>
+      this(underlyingOfTermRef(tp))
+    case _: ThisType =>
       this(tp.widen)
     case SuperType(thistpe, supertpe) =>
       SuperType(this(thistpe), this(supertpe))
@@ -683,6 +689,31 @@ class TypeErasure(sourceLanguage: SourceLanguage, semiEraseVCs: Boolean, isConst
     case tp if (tp `eq` NoType) || (tp `eq` NoPrefix) =>
       tp
   }
+
+  /** Like translucentSuperType, but issue a fatal error if it does not exist. */
+  private def checkedSuperType(tp: TypeProxy)(using Context): Type =
+    val tp1 = tp.translucentSuperType
+    if !tp1.exists then
+      val msg = tp.typeConstructor match
+        case tycon: TypeRef =>
+          MissingType(tycon.prefix, tycon.name).toMessage.message
+        case _ =>
+          i"Cannot resolve reference to $tp"
+      throw FatalError(msg)
+    tp1
+
+  /** Widen term ref, skipping any `()` parameter of an eventual getter. Used to erase a TermRef.
+   *  Since getters are introduced after erasure, one would think that erasing a TermRef
+   *  could just use `widen`. However, it's possible that the TermRef got read from a class
+   *  file after Getters (i.e. in the backend). In that case, the reference will not get
+   *  an earlier denotation even when time travelling forward to erasure. Hence, we
+   *  need to take the extra precaution of going from nullary method types to their resuls.
+   *  A test case where this is needed is pos/i15649.scala, which fails non-deterministically
+   *  if `underlyingOfTermRef` is replaced by `widen`.
+   */
+  private def underlyingOfTermRef(tp: TermRef)(using Context) = tp.widen match
+    case tpw @ MethodType(Nil) if tp.symbol.isGetter => tpw.resultType
+    case tpw => tpw
 
   private def eraseArray(tp: Type)(using Context) = {
     val defn.ArrayOf(elemtp) = tp: @unchecked
@@ -797,7 +828,7 @@ class TypeErasure(sourceLanguage: SourceLanguage, semiEraseVCs: Boolean, isConst
           throw new MissingType(tp.prefix, tp.name)
         val sym = tp.symbol
         if (!sym.isClass) {
-          val info = tp.translucentSuperType
+          val info = checkedSuperType(tp)
           if (!info.exists) assert(false, i"undefined: $tp with symbol $sym")
           return sigName(info)
         }
@@ -823,13 +854,13 @@ class TypeErasure(sourceLanguage: SourceLanguage, semiEraseVCs: Boolean, isConst
         sigName( // todo: what about repeatedParam?
           if (erasureDependsOnArgs(sym)) this(tp)
           else if (sym.isClass) tp.underlying
-          else tp.translucentSuperType)
+          else checkedSuperType(tp))
       case ErasedValueType(_, underlying) =>
         sigName(underlying)
       case JavaArrayType(elem) =>
         sigName(elem) ++ "[]"
       case tp: TermRef =>
-        sigName(tp.widen)
+        sigName(underlyingOfTermRef(tp))
       case ExprType(rt) =>
         sigName(defn.FunctionOf(Nil, rt))
       case tp: TypeVar =>

@@ -19,7 +19,7 @@ import core.Constants._
 import core.Definitions._
 import core.Annotations.BodyAnnotation
 import typer.NoChecking
-import typer.Inliner
+import inlines.Inlines
 import typer.ProtoTypes._
 import typer.ErrorReporting.errorTree
 import typer.Checking.checkValue
@@ -153,6 +153,7 @@ class Erasure extends Phase with DenotTransformer {
   override def checkPostCondition(tree: tpd.Tree)(using Context): Unit = {
     assertErased(tree)
     tree match {
+      case _: tpd.Import => assert(false, i"illegal tree: $tree")
       case res: tpd.This =>
         assert(!ExplicitOuter.referencesOuter(ctx.owner.lexicallyEnclosingClass, res),
           i"Reference to $res from ${ctx.owner.showLocated}")
@@ -385,7 +386,7 @@ object Erasure {
       case _: FunProto | AnyFunctionProto => tree
       case _ => tree.tpe.widen match
         case mt: MethodType if tree.isTerm =>
-          assert(mt.paramInfos.isEmpty)//, i"bad adapt for $tree: $mt")
+          assert(mt.paramInfos.isEmpty, i"bad adapt for $tree: $mt")
           adaptToType(tree.appliedToNone, pt)
         case tpw =>
           if (pt.isInstanceOf[ProtoType] || tree.tpe <:< pt)
@@ -548,28 +549,30 @@ object Erasure {
 
     /** Check that Java statics and packages can only be used in selections.
       */
-    private def checkNotErased(tree: Tree)(using Context): tree.type = {
-      if (!ctx.mode.is(Mode.Type)) {
+    private def checkNotErased(tree: Tree)(using Context): tree.type =
+      if !ctx.mode.is(Mode.Type) then
         if isErased(tree) then
           val msg =
             if tree.symbol.is(Flags.Inline) then
               em"""${tree.symbol} is declared as `inline`, but was not inlined
                   |
-                  |Try increasing `-Xmax-inlines` above ${ctx.settings.XmaxInlines.value}""".stripMargin
-            else em"${tree.symbol} is declared as `erased`, but is in fact used"
+                  |Try increasing `-Xmax-inlines` above ${ctx.settings.XmaxInlines.value}"""
+            else
+              em"${tree.symbol} is declared as `erased`, but is in fact used"
           report.error(msg, tree.srcPos)
-        tree.symbol.getAnnotation(defn.CompileTimeOnlyAnnot) match {
+        tree.symbol.getAnnotation(defn.CompileTimeOnlyAnnot) match
           case Some(annot) =>
-            def defaultMsg =
-              i"""Reference to ${tree.symbol.showLocated} should not have survived,
-                 |it should have been processed and eliminated during expansion of an enclosing macro or term erasure."""
-            val message = annot.argumentConstant(0).fold(defaultMsg)(_.stringValue)
+            val message = annot.argumentConstant(0) match
+              case Some(c) =>
+                c.stringValue.toMessage
+              case _ =>
+                em"""Reference to ${tree.symbol.showLocated} should not have survived,
+                    |it should have been processed and eliminated during expansion of an enclosing macro or term erasure."""
             report.error(message, tree.srcPos)
           case _ => // OK
-        }
-      }
+
       checkNotErasedClass(tree)
-    }
+    end checkNotErased
 
     private def checkNotErasedClass(tp: Type, tree: untpd.Tree)(using Context): Unit = tp match
       case JavaArrayType(et) =>
@@ -613,7 +616,7 @@ object Erasure {
      *  are handled separately by [[typedDefDef]], [[typedValDef]] and [[typedTyped]].
      */
     override def typedTypeTree(tree: untpd.TypeTree, pt: Type)(using Context): TypeTree =
-      checkNotErasedClass(tree.withType(erasure(tree.tpe)))
+      checkNotErasedClass(tree.withType(erasure(tree.typeOpt)))
 
     /** This override is only needed to semi-erase type ascriptions */
     override def typedTyped(tree: untpd.Typed, pt: Type)(using Context): Tree =
@@ -695,18 +698,20 @@ object Erasure {
         return tree.asInstanceOf[Tree] // we are re-typing a primitive array op
 
       val owner = mapOwner(origSym)
-      var sym = if (owner eq origSym.maybeOwner) origSym else owner.info.decl(tree.name).symbol
-      if !sym.exists then
-        // We fail the sym.exists test for pos/i15158.scala, where we pass an infinitely
-        // recurring match type to an overloaded constructor. An equivalent test
-        // with regular apply methods succeeds. It's at present unclear whether
-        //  - the program should be rejected, or
-        //  - there is another fix.
-        // Therefore, we apply the fix to use the pre-erasure symbol, but only
-        // for constructors, in order not to mask other possible bugs that would
-        // trigger the assert(sym.exists, ...) below.
-        val prevSym = tree.symbol(using preErasureCtx)
-        if prevSym.isConstructor then sym = prevSym
+      val sym =
+        (if (owner eq origSym.maybeOwner) origSym else owner.info.decl(tree.name).symbol)
+        .orElse {
+          // We fail the sym.exists test for pos/i15158.scala, where we pass an infinitely
+          // recurring match type to an overloaded constructor. An equivalent test
+          // with regular apply methods succeeds. It's at present unclear whether
+          //  - the program should be rejected, or
+          //  - there is another fix.
+          // Therefore, we apply the fix to use the pre-erasure symbol, but only
+          // for constructors, in order not to mask other possible bugs that would
+          // trigger the assert(sym.exists, ...) below.
+          val prevSym = tree.symbol(using preErasureCtx)
+          if prevSym.isConstructor then prevSym else NoSymbol
+        }
 
       assert(sym.exists, i"no owner from $owner/${origSym.showLocated} in $tree")
 
@@ -769,7 +774,7 @@ object Erasure {
             select(qual1, sym)
           else
             val castTarget = // Avoid inaccessible cast targets, see i8661
-              if isJvmAccessible(sym.owner)
+              if isJvmAccessible(sym.owner) && sym.owner.isType
               then
                 sym.owner.typeRef
               else
@@ -779,7 +784,7 @@ object Erasure {
                 val tp = originalQual
                 if tp =:= qual1.tpe.widen then
                   return errorTree(qual1,
-                    ex"Unable to emit reference to ${sym.showLocated}, ${sym.owner} is not accessible in ${ctx.owner.enclosingClass}")
+                    em"Unable to emit reference to ${sym.showLocated}, ${sym.owner} is not accessible in ${ctx.owner.enclosingClass}")
                 tp
             recur(cast(qual1, castTarget))
         }
@@ -885,7 +890,7 @@ object Erasure {
 
     override def typedInlined(tree: untpd.Inlined, pt: Type)(using Context): Tree =
       super.typedInlined(tree, pt) match {
-        case tree: Inlined => Inliner.dropInlined(tree)
+        case tree: Inlined => Inlines.dropInlined(tree)
       }
 
     override def typedValDef(vdef: untpd.ValDef, sym: Symbol)(using Context): Tree =
@@ -1034,7 +1039,8 @@ object Erasure {
       typed(tree.arg, pt)
 
     override def typedStats(stats: List[untpd.Tree], exprOwner: Symbol)(using Context): (List[Tree], Context) = {
-      val stats0 = addRetainedInlineBodies(stats)(using preErasureCtx)
+      // discard Imports first, since Bridges will use tree's symbol
+      val stats0 = addRetainedInlineBodies(stats.filter(!_.isInstanceOf[untpd.Import]))(using preErasureCtx)
       val stats1 =
         if (takesBridges(ctx.owner)) new Bridges(ctx.owner.asClass, erasurePhase).add(stats0)
         else stats0
@@ -1042,7 +1048,13 @@ object Erasure {
       (stats2.filterConserve(!_.isEmpty), finalCtx)
     }
 
-    override def adapt(tree: Tree, pt: Type, locked: TypeVars, tryGadtHealing: Boolean)(using Context): Tree =
+    /** Finally drops all (language-) imports in erasure.
+     *  Since some of the language imports change the subtyping,
+     *  we cannot check the trees before erasure.
+     */
+    override def typedImport(tree: untpd.Import)(using Context) = EmptyTree
+
+    override def adapt(tree: Tree, pt: Type, locked: TypeVars)(using Context): Tree =
       trace(i"adapting ${tree.showSummary()}: ${tree.tpe} to $pt", show = true) {
         if ctx.phase != erasurePhase && ctx.phase != erasurePhase.next then
           // this can happen when reading annotations loaded during erasure,

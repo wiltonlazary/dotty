@@ -4,6 +4,7 @@ package dotc
 import core._
 import Contexts._
 import typer.{TyperPhase, RefChecks}
+import cc.CheckCaptures
 import parsing.Parser
 import Phases.Phase
 import transform._
@@ -34,6 +35,7 @@ class Compiler {
   protected def frontendPhases: List[List[Phase]] =
     List(new Parser) ::             // Compiler frontend: scanner, parser
     List(new TyperPhase) ::         // Compiler frontend: namer, typer
+    List(new CheckUnused) ::        // Check for unused elements
     List(new YCheckPositions) ::    // YCheck positions
     List(new sbt.ExtractDependencies) :: // Sends information on classes' dependencies to sbt via callbacks
     List(new semanticdb.ExtractSemanticDB) :: // Extract info into .semanticdb files
@@ -78,11 +80,16 @@ class Compiler {
          new SpecializeApplyMethods, // Adds specialized methods to FunctionN
          new TryCatchPatterns,       // Compile cases in try/catch
          new PatternMatcher) ::      // Compile pattern matches
+    List(new TestRecheck.Pre) ::     // Test only: run rechecker, enabled under -Yrecheck-test
+    List(new TestRecheck) ::         // Test only: run rechecker, enabled under -Yrecheck-test
+    List(new CheckCaptures.Pre) ::   // Preparations for check captures phase, enabled under captureChecking
+    List(new CheckCaptures) ::       // Check captures, enabled under captureChecking
     List(new ElimOpaque,             // Turn opaque into normal aliases
          new sjs.ExplicitJSClasses,  // Make all JS classes explicit (Scala.js only)
          new ExplicitOuter,          // Add accessors to outer classes from nested ones.
          new ExplicitSelf,           // Make references to non-trivial self types explicit as casts
-         new StringInterpolatorOpt) :: // Optimizes raw and s and f string interpolators by rewriting them to string concatenations or formats
+         new StringInterpolatorOpt,  // Optimizes raw and s and f string interpolators by rewriting them to string concatenations or formats
+         new DropBreaks) ::          // Optimize local Break throws by rewriting them 
     List(new PruneErasedDefs,        // Drop erased definitions from scopes and simplify erased expressions
          new UninitializedDefs,      // Replaces `compiletime.uninitialized` by `_`
          new InlinePatterns,         // Remove placeholders of inlined patterns

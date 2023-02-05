@@ -36,7 +36,8 @@ import org.jline.reader._
 
 import scala.annotation.tailrec
 import scala.collection.mutable
-import scala.collection.JavaConverters._
+import scala.jdk.CollectionConverters._
+import scala.util.control.NonFatal
 import scala.util.Using
 
 /** The state of the REPL contains necessary bindings instead of having to have
@@ -118,7 +119,7 @@ class ReplDriver(settings: Array[String],
   private var rootCtx: Context = _
   private var shouldStart: Boolean = _
   private var compiler: ReplCompiler = _
-  private var rendering: Rendering = _
+  protected var rendering: Rendering = _
 
   // initialize the REPL session as part of the constructor so that once `run`
   // is called, we're in business
@@ -138,7 +139,7 @@ class ReplDriver(settings: Array[String],
    *  observable outside of the CLI, for this reason, most helper methods are
    *  `protected final` to facilitate testing.
    */
-  final def runUntilQuit(initialState: State = initialState): State = {
+  def runUntilQuit(using initialState: State = initialState)(): State = {
     val terminal = new JLineTerminal
 
     out.println(
@@ -146,7 +147,7 @@ class ReplDriver(settings: Array[String],
          |Type in expressions for evaluation. Or try :help.""".stripMargin)
 
     /** Blockingly read a line, getting back a parse result */
-    def readLine(state: State): ParseResult = {
+    def readLine()(using state: State): ParseResult = {
       val completer: Completer = { (_, line, candidates) =>
         val comps = completions(line.cursor, line.line, state)
         candidates.addAll(comps.asJava)
@@ -154,7 +155,7 @@ class ReplDriver(settings: Array[String],
       given Context = state.context
       try {
         val line = terminal.readLine(completer)
-        ParseResult(line)(state)
+        ParseResult(line)
       } catch {
         case _: EndOfFileException |
             _: UserInterruptException => // Ctrl+D or Ctrl+C
@@ -162,25 +163,29 @@ class ReplDriver(settings: Array[String],
       }
     }
 
-    @tailrec def loop(state: State): State = {
-      val res = readLine(state)
+    @tailrec def loop(using state: State)(): State = {
+      val res = readLine()
       if (res == Quit) state
-      else loop(interpret(res)(state))
+      else loop(using interpret(res))()
     }
 
-    try runBody { loop(initialState) }
+    try runBody { loop() }
     finally terminal.close()
   }
 
-  final def run(input: String)(implicit state: State): State = runBody {
-    val parsed = ParseResult(input)(state)
-    interpret(parsed)
+  final def run(input: String)(using state: State): State = runBody {
+    interpret(ParseResult.complete(input))
   }
 
-  private def runBody(body: => State): State = rendering.classLoader()(using rootCtx).asContext(withRedirectedOutput(body))
+  final def runQuietly(input: String)(using State): State = runBody {
+    val parsed = ParseResult(input)
+    interpret(parsed, quiet = true)
+  }
+
+  protected def runBody(body: => State): State = rendering.classLoader()(using rootCtx).asContext(withRedirectedOutput(body))
 
   // TODO: i5069
-  final def bind(name: String, value: Any)(implicit state: State): State = state
+  final def bind(name: String, value: Any)(using state: State): State = state
 
   // redirecting the output allows us to test `println` in scripted tests
   private def withRedirectedOutput(op: => State): State = {
@@ -237,16 +242,16 @@ class ReplDriver(settings: Array[String],
           unit.tpdTree = tree
           given Context = state.context.fresh.setCompilationUnit(unit)
           val srcPos = SourcePosition(file, Span(cursor))
-          val (_, completions) = Completion.completions(srcPos)
+          val completions = try Completion.completions(srcPos)._2 catch case NonFatal(_) => Nil
           completions.map(_.label).distinct.map(makeCandidate)
         }
         .getOrElse(Nil)
   end completions
 
-  private def interpret(res: ParseResult)(implicit state: State): State = {
+  protected def interpret(res: ParseResult, quiet: Boolean = false)(using state: State): State = {
     res match {
       case parsed: Parsed if parsed.trees.nonEmpty =>
-        compile(parsed, state)
+        compile(parsed, state, quiet)
 
       case SyntaxErrors(_, errs, _) =>
         displayErrors(errs)
@@ -264,7 +269,7 @@ class ReplDriver(settings: Array[String],
   }
 
   /** Compile `parsed` trees and evolve `state` in accordance */
-  private def compile(parsed: Parsed, istate: State): State = {
+  private def compile(parsed: Parsed, istate: State, quiet: Boolean = false): State = {
     def extractNewestWrapper(tree: untpd.Tree): Name = tree match {
       case PackageDef(_, (obj: untpd.ModuleDef) :: Nil) => obj.name.moduleClassName
       case _ => nme.NO_NAME
@@ -279,7 +284,7 @@ class ReplDriver(settings: Array[String],
         imports.foldLeft(ctx.fresh.setNewScope)((ctx, imp) =>
           ctx.importContext(imp, imp.symbol(using ctx)))
 
-    implicit val state = {
+    given State = {
       val state0 = newRun(istate, parsed.reporter)
       state0.copy(context = state0.context.withSource(parsed.source))
     }
@@ -305,19 +310,21 @@ class ReplDriver(settings: Array[String],
             inContext(newState.context) {
               val (updatedState, definitions) =
                 if (!ctx.settings.XreplDisableDisplay.value)
-                  renderDefinitions(unit.tpdTree, newestWrapper)(newStateWithImports)
+                  renderDefinitions(unit.tpdTree, newestWrapper)(using newStateWithImports)
                 else
                   (newStateWithImports, Seq.empty)
 
               // output is printed in the order it was put in. warnings should be
               // shown before infos (eg. typedefs) for the same line. column
               // ordering is mostly to make tests deterministic
-              implicit val diagnosticOrdering: Ordering[Diagnostic] =
+              given Ordering[Diagnostic] =
                 Ordering[(Int, Int, Int)].on(d => (d.pos.line, -d.level, d.pos.column))
 
-              (definitions ++ warnings)
-                .sorted
-                .foreach(printDiagnostic)
+              if (!quiet) {
+                (definitions ++ warnings)
+                  .sorted
+                  .foreach(printDiagnostic)
+              }
 
               updatedState
             }
@@ -325,7 +332,7 @@ class ReplDriver(settings: Array[String],
       )
   }
 
-  private def renderDefinitions(tree: tpd.Tree, newestWrapper: Name)(implicit state: State): (State, Seq[Diagnostic]) = {
+  private def renderDefinitions(tree: tpd.Tree, newestWrapper: Name)(using state: State): (State, Seq[Diagnostic]) = {
     given Context = state.context
 
     def resAndUnit(denot: Denotation) = {
@@ -417,7 +424,7 @@ class ReplDriver(settings: Array[String],
   }
 
   /** Interpret `cmd` to action and propagate potentially new `state` */
-  private def interpretCommand(cmd: Command)(implicit state: State): State = cmd match {
+  private def interpretCommand(cmd: Command)(using state: State): State = cmd match {
     case UnknownCommand(cmd) =>
       out.println(s"""Unknown command: "$cmd", run ":help" for a list of commands""")
       state
@@ -465,7 +472,7 @@ class ReplDriver(settings: Array[String],
       expr match {
         case "" => out.println(s":type <expression>")
         case _  =>
-          compiler.typeOf(expr)(newRun(state)).fold(
+          compiler.typeOf(expr)(using newRun(state)).fold(
             displayErrors,
             res => out.println(res)  // result has some highlights
           )
@@ -476,7 +483,7 @@ class ReplDriver(settings: Array[String],
       expr match {
         case "" => out.println(s":doc <expression>")
         case _  =>
-          compiler.docOf(expr)(newRun(state)).fold(
+          compiler.docOf(expr)(using newRun(state)).fold(
             displayErrors,
             res => out.println(res)
           )
@@ -499,7 +506,7 @@ class ReplDriver(settings: Array[String],
   }
 
   /** shows all errors nicely formatted */
-  private def displayErrors(errs: Seq[Diagnostic])(implicit state: State): State = {
+  private def displayErrors(errs: Seq[Diagnostic])(using state: State): State = {
     errs.foreach(printDiagnostic)
     state
   }
@@ -513,7 +520,7 @@ class ReplDriver(settings: Array[String],
   }
 
   /** Print warnings & errors using ReplConsoleReporter, and info straight to out */
-  private def printDiagnostic(dia: Diagnostic)(implicit state: State) = dia.level match
+  private def printDiagnostic(dia: Diagnostic)(using state: State) = dia.level match
     case interfaces.Diagnostic.INFO => out.println(dia.msg) // print REPL's special info diagnostics directly to out
     case _                          => ReplConsoleReporter.doReport(dia)(using state.context)
 

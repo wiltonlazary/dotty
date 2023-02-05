@@ -19,7 +19,6 @@ import reporting.{Suppression, Action, Profile, ActiveProfile, NoProfile}
 import reporting.Diagnostic
 import reporting.Diagnostic.Warning
 import rewrites.Rewrites
-
 import profile.Profiler
 import printing.XprintMode
 import typer.ImplicitRunInfo
@@ -164,6 +163,16 @@ class Run(comp: Compiler, ictx: Context) extends ImplicitRunInfo with Constraint
   /** Actions that need to be performed at the end of the current compilation run */
   private var finalizeActions = mutable.ListBuffer[() => Unit]()
 
+  /** Will be set to true if any of the compiled compilation units contains
+   *  a pureFunctions language import.
+   */
+  var pureFunsImportEncountered = false
+
+  /** Will be set to true if any of the compiled compilation units contains
+   *  a captureChecking language import.
+   */
+  var ccImportEncountered = false
+
   def compile(files: List[AbstractFile]): Unit =
     try
       val sources = files.map(runContext.getSource(_))
@@ -222,9 +231,13 @@ class Run(comp: Compiler, ictx: Context) extends ImplicitRunInfo with Constraint
       ctx.settings.Yskip.value, ctx.settings.YstopBefore.value, stopAfter, ctx.settings.Ycheck.value)
     ctx.base.usePhases(phases)
 
+    if ctx.settings.YnoDoubleBindings.value then
+      ctx.base.checkNoDoubleBindings = true
+
     def runPhases(using Context) = {
       var lastPrintedTree: PrintedTree = NoPrintedTree
       val profiler = ctx.profiler
+      var phasesWereAdjusted = false
 
       for (phase <- ctx.base.allPhases)
         if (phase.isRunnable)
@@ -243,6 +256,11 @@ class Run(comp: Compiler, ictx: Context) extends ImplicitRunInfo with Constraint
               Stats.record(s"retained typed trees at end of $phase", unit.tpdTree.treeSize)
             ctx.typerState.gc()
           }
+          if !phasesWereAdjusted then
+            phasesWereAdjusted = true
+            if !Feature.ccEnabledSomewhere then
+              ctx.base.unlinkPhaseAsDenotTransformer(Phases.checkCapturesPhase.prev)
+              ctx.base.unlinkPhaseAsDenotTransformer(Phases.checkCapturesPhase)
 
       profiler.finished()
     }
@@ -294,7 +312,7 @@ class Run(comp: Compiler, ictx: Context) extends ImplicitRunInfo with Constraint
     val fusedPhase = ctx.phase.prevMega
     val echoHeader = f"[[syntax trees at end of $fusedPhase%25s]] // ${unit.source}"
     val tree = if ctx.isAfterTyper then unit.tpdTree else unit.untpdTree
-    val treeString = tree.show(using ctx.withProperty(XprintMode, Some(())))
+    val treeString = fusedPhase.show(tree)
 
     last match {
       case SomePrintedTree(phase, lastTreeString) if lastTreeString == treeString =>

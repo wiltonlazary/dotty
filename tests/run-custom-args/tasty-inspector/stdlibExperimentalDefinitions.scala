@@ -46,18 +46,38 @@ val experimentalDefinitionInLibrary = Set(
   "scala.annotation.newMain.Help$",
   "scala.annotation.newMain.Names",
 
+  //// New feature: capture checking
+  "scala.annotation.capability",
+  "scala.annotation.internal.WithPureFuns",
+  "scala.annotation.internal.requiresCapability",
+  "scala.annotation.retains",
+  "scala.annotation.retainsByName",
+  "scala.caps",
+  "scala.caps$",
+
+  //// New feature: into
+  "scala.annotation.allowConversions",
+
   //// New APIs: Mirror
   // Can be stabilized in 3.3.0 or later.
   "scala.deriving.Mirror$.fromProductTyped", // This API is a bit convoluted. We may need some more feedback before we can stabilize it.
 
+  //// New feature: Macro annotations
+  "scala.annotation.MacroAnnotation",
+
    //// New APIs: Quotes
   // Can be stabilized in 3.3.0 (unsure) or later
   "scala.quoted.Quotes.reflectModule.CompilationInfoModule.XmacroSettings",
+  "scala.quoted.Quotes.reflectModule.FlagsModule.JavaAnnotation",
   // Cant be stabilized yet.
   // Need newClass variant that can add constructor parameters.
   // Need experimental annotation macros to check that design works.
   "scala.quoted.Quotes.reflectModule.ClassDefModule.apply",
+  "scala.quoted.Quotes.reflectModule.ClassDefModule.module",
   "scala.quoted.Quotes.reflectModule.SymbolModule.newClass",
+  "scala.quoted.Quotes.reflectModule.SymbolModule.newModule",
+  "scala.quoted.Quotes.reflectModule.SymbolModule.freshName",
+  "scala.quoted.Quotes.reflectModule.SymbolMethods.info",
 )
 
 

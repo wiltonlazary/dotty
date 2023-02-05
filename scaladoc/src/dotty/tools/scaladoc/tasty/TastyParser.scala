@@ -135,7 +135,7 @@ case class ScaladocTastyInspector()(using ctx: DocContext) extends DocTastyInspe
       topLevels ++= intrinsicTypeDefs
       val scalaPckg = defn.ScalaPackage
       given parser.qctx.type = parser.qctx
-      topLevels += "scala" -> Member(scalaPckg.fullName, scalaPckg.dri, Kind.Package)
+      topLevels += "scala" -> Member(scalaPckg.fullName, "", scalaPckg.dri, Kind.Package)
       topLevels += mergeAnyRefAliasAndObject(parser)
 
   def result(): (List[Member], Option[Comment]) =
@@ -228,6 +228,6 @@ case class TastyParser(
     try Traverser.traverseTree(root)(Symbol.spliceOwner)
     catch case e: Throwable =>
       println(s"Problem parsing ${root.pos}, documentation may not be generated.")
-      e.printStackTrace()
+      // e.printStackTrace()
 
     docs.result()

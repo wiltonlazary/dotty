@@ -9,14 +9,12 @@ import scala.util.control.NonFatal
 import Contexts._, Names._, Phases._, Symbols._
 import printing.{ Printer, Showable }, printing.Formatting._, printing.Texts._
 import transform.MegaPhase
+import reporting.{Message, NoExplanation}
 
-/** This object provides useful implicit decorators for types defined elsewhere */
+/** This object provides useful extension methods for types defined elsewhere */
 object Decorators {
 
-  /** Extension methods for toType/TermName methods on strings.
-   *  They are in an implicit object for now, so that we can import decorators
-   *  with a normal wildcard. In the future, once #9255 is in trunk, replace with
-   *  a simple collective extension.
+  /** Extension methods for toType/TermName methods on PreNames.
    */
   extension (pn: PreName)
     def toTermName: TermName = pn match
@@ -60,6 +58,12 @@ object Decorators {
       padding + s.replace("\n", "\n" + padding)
   end extension
 
+  /** Convert lazy string to message. To be with caution, since no message-defined
+   *  formatting will be done on the string.
+   */
+  extension (str: => String)
+    def toMessage: Message = NoExplanation(str)(using NoContext)
+
   /** Implements a findSymbol method on iterators of Symbols that
    *  works like find but avoids Option, replacing None with NoSymbol.
    */
@@ -77,7 +81,7 @@ object Decorators {
   /** Implements filterConserve, zipWithConserve methods
    *  on lists that avoid duplication of list nodes where feasible.
    */
-  implicit class ListDecorator[T](val xs: List[T]) extends AnyVal {
+  extension [T](xs: List[T])
 
     final def mapconserve[U](f: T => U): List[U] = {
       @tailrec
@@ -206,11 +210,18 @@ object Decorators {
     }
 
     /** Union on lists seen as sets */
-    def | (ys: List[T]): List[T] = xs ::: (ys filterNot (xs contains _))
+    def setUnion (ys: List[T]): List[T] = xs ::: ys.filterNot(xs contains _)
 
-    /** Intersection on lists seen as sets */
-    def & (ys: List[T]): List[T] = xs filter (ys contains _)
-  }
+    /** Reduce left with `op` as long as list `xs` is not longer than `seqLimit`.
+     *  Otherwise, split list in two half, reduce each, and combine with `op`.
+     */
+    def reduceBalanced(op: (T, T) => T, seqLimit: Int = 100): T =
+      val len = xs.length
+      if len > seqLimit then
+        val (leading, trailing) = xs.splitAt(len / 2)
+        op(leading.reduceBalanced(op, seqLimit), trailing.reduceBalanced(op, seqLimit))
+      else
+        xs.reduceLeft(op)
 
   extension [T, U](xss: List[List[T]])
     def nestedMap(f: T => U): List[List[U]] = xss match
@@ -268,17 +279,22 @@ object Decorators {
         catch
           case ex: CyclicReference => "... (caught cyclic reference) ..."
           case NonFatal(ex)
-              if !ctx.mode.is(Mode.PrintShowExceptions) && !ctx.settings.YshowPrintErrors.value =>
-            val msg = ex match { case te: TypeError => te.toMessage case _ => ex.getMessage }
+          if !ctx.mode.is(Mode.PrintShowExceptions) && !ctx.settings.YshowPrintErrors.value =>
+            val msg = ex match
+              case te: TypeError => te.toMessage.message
+              case _ => ex.getMessage
             s"[cannot display due to $msg, raw string = $x]"
       case _ => String.valueOf(x).nn
+
+    /** Returns the simple class name of `x`. */
+    def className: String = x.getClass.getSimpleName.nn
 
   extension [T](x: T)
     def assertingErrorsReported(using Context): T = {
       assert(ctx.reporter.errorsReported)
       x
     }
-    def assertingErrorsReported(msg: => String)(using Context): T = {
+    def assertingErrorsReported(msg: Message)(using Context): T = {
       assert(ctx.reporter.errorsReported, msg)
       x
     }
@@ -288,21 +304,16 @@ object Decorators {
       if (xs.head eq x1) && (xs.tail eq xs1) then xs else x1 :: xs1
 
   extension (sc: StringContext)
+
     /** General purpose string formatting */
     def i(args: Shown*)(using Context): String =
       new StringFormatter(sc).assemble(args)
 
-    /** Formatting for error messages: Like `i` but suppress follow-on
-     *  error messages after the first one if some of their arguments are "non-sensical".
+    /** Interpolator yielding an error message, which undergoes
+     *  the formatting defined in Message.
      */
-    def em(args: Shown*)(using Context): String =
-      new ErrorMessageFormatter(sc).assemble(args)
-
-    /** Formatting with added explanations: Like `em`, but add explanations to
-     *  give more info about type variables and to disambiguate where needed.
-     */
-    def ex(args: Shown*)(using Context): String =
-      explained(em(args: _*))
+    def em(args: Shown*)(using Context): NoExplanation =
+      NoExplanation(i(args*))
 
   extension [T <: AnyRef](arr: Array[T])
     def binarySearch(x: T | Null): Int = java.util.Arrays.binarySearch(arr.asInstanceOf[Array[Object | Null]], x)

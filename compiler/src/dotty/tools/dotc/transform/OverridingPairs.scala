@@ -29,7 +29,9 @@ object OverridingPairs:
     /** Symbols to exclude: Here these are constructors and private locals.
      *  But it may be refined in subclasses.
      */
-    protected def exclude(sym: Symbol): Boolean = !sym.memberCanMatchInheritedSymbols
+    protected def exclude(sym: Symbol): Boolean =
+      !sym.memberCanMatchInheritedSymbols
+      || ctx.phase == Phases.checkCapturesPhase && sym.is(Recheck.ResetPrivate)
 
     /** The parents of base that are checked when deciding whether an overriding
      *  pair has already been treated in a parent class.
@@ -198,10 +200,13 @@ object OverridingPairs:
   /** Let `member` and `other` be members of some common class C with types
    *  `memberTp` and `otherTp` in C. Are the two symbols considered an overriding
    *  pair in C? We assume that names already match so we test only the types here.
-   *  @param fallBack  A function called if the initial test is false and
-   *                   `member` and `other` are term symbols.
+   *  @param fallBack   A function called if the initial test is false and
+   *                    `member` and `other` are term symbols.
+   *  @param isSubType  A function to be used for checking subtype relationships
+   *                    between term fields.
    */
-  def isOverridingPair(member: Symbol, memberTp: Type, other: Symbol, otherTp: Type, fallBack: => Boolean = false)(using Context): Boolean =
+  def isOverridingPair(member: Symbol, memberTp: Type, other: Symbol, otherTp: Type, fallBack: => Boolean = false,
+                       isSubType: (Type, Type) => Context ?=> Boolean = (tp1, tp2) => tp1 frozen_<:< tp2)(using Context): Boolean =
     if member.isType then // intersection of bounds to refined types must be nonempty
       memberTp.bounds.hi.hasSameKindAs(otherTp.bounds.hi)
       && (
@@ -220,6 +225,6 @@ object OverridingPairs:
       val relaxedOverriding = ctx.explicitNulls && (member.is(JavaDefined) || other.is(JavaDefined))
       member.name.is(DefaultGetterName) // default getters are not checked for compatibility
       || memberTp.overrides(otherTp, relaxedOverriding,
-            member.matchNullaryLoosely || other.matchNullaryLoosely || fallBack)
+            member.matchNullaryLoosely || other.matchNullaryLoosely || fallBack, isSubType = isSubType)
 
 end OverridingPairs

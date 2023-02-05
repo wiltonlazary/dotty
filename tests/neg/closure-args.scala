@@ -1,4 +1,4 @@
-import language.experimental.fewerBraces
+import language.`3.3`
 
 val x = List(1).map: (x: => Int) => // error
   ???
@@ -14,7 +14,7 @@ val d = xs   // error
   .map: x => x.toString + xs.dropWhile:
     y => y > 0
 
-val c = List(xs.map: y => y + y)  // error // error
+val c = List(xs.map: y => y + y)  // error // error // error // error
 val d2: String = xs    // error
   .map: x => x.toString + xs.dropWhile: y => y > 0  // error // error
   .filter: z => !z.isEmpty // error

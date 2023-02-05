@@ -72,9 +72,7 @@ class ExplicitOuter extends MiniPhase with InfoTransformer { thisPhase =>
   override def transformTemplate(impl: Template)(using Context): Tree = {
     val cls = ctx.owner.asClass
     val isTrait = cls.is(Trait)
-    if (needsOuterIfReferenced(cls) &&
-        !needsOuterAlways(cls) &&
-        impl.existsSubTree(referencesOuter(cls, _)))
+    if needsOuterIfReferenced(cls) && !needsOuterAlways(cls) && referencesOuter(cls, impl) then
       ensureOuterAccessors(cls)
 
     val clsHasOuter = hasOuter(cls)
@@ -178,21 +176,22 @@ object ExplicitOuter {
           if prefix == NoPrefix then outerCls.typeRef.appliedTo(outerCls.typeParams.map(_ => TypeBounds.empty))
           else prefix.widen)
     val info = if (flags.is(Method)) ExprType(target) else target
+    val currentNestingLevel = ctx.nestingLevel
     atPhaseNoEarlier(explicitOuterPhase.next) { // outer accessors are entered at explicitOuter + 1, should not be defined before.
-      newSymbol(owner, name, SyntheticArtifact | flags, info, coord = cls.coord)
+      newSymbol(owner, name, SyntheticArtifact | flags, info, coord = cls.coord, nestingLevel = currentNestingLevel)
     }
   }
 
   /** A new param accessor for the outer field in class `cls` */
   private def newOuterParamAccessor(cls: ClassSymbol)(using Context) =
-    newOuterSym(cls, cls, nme.OUTER, Private | Local | ParamAccessor)
+    newOuterSym(cls, cls, nme.OUTER, LocalParamAccessor)
 
   /** A new outer accessor for class `cls` which is a member of `owner` */
   private def newOuterAccessor(owner: ClassSymbol, cls: ClassSymbol)(using Context) = {
     val deferredIfTrait = if (owner.is(Trait)) Deferred else EmptyFlags
     val outerAccIfOwn = if (owner == cls) OuterAccessor else EmptyFlags
     newOuterSym(owner, cls, outerAccName(cls),
-      Final | Method | StableRealizable | outerAccIfOwn | deferredIfTrait)
+      Final | StableMethod | outerAccIfOwn | deferredIfTrait)
   }
 
   private def outerAccName(cls: ClassSymbol)(using Context): TermName =
@@ -255,55 +254,83 @@ object ExplicitOuter {
 
   /** Tree references an outer class of `cls` which is not a static owner.
    */
-  def referencesOuter(cls: Symbol, tree: Tree)(using Context): Boolean = {
-    def isOuterSym(sym: Symbol) =
-      !sym.isStaticOwner && cls.isProperlyContainedIn(sym)
-    def isOuterRef(ref: Type): Boolean = ref match {
-      case ref: ThisType =>
-        isOuterSym(ref.cls)
-      case ref: TermRef =>
-        if (ref.prefix ne NoPrefix)
-          !ref.symbol.isStatic && isOuterRef(ref.prefix)
-        else (
-          ref.symbol.isOneOf(HoistableFlags) &&
-            // ref.symbol will be placed in enclosing class scope by LambdaLift, so it might need
-            // an outer path then.
-            isOuterSym(ref.symbol.owner.enclosingClass)
-          ||
-            // If not hoistable, ref.symbol will get a proxy in immediately enclosing class. If this properly
-            // contains the current class, it needs an outer path.
-            // If the symbol is hoistable, it might have free variables for which the same
-            // reasoning applies. See pos/i1664.scala
-            ctx.owner.enclosingClass.owner.enclosingClass.isContainedIn(ref.symbol.owner)
-          )
-      case _ => false
-    }
-    def hasOuterPrefix(tp: Type): Boolean = tp.stripped match {
-      case AppliedType(tycon, _) => hasOuterPrefix(tycon)
-      case TypeRef(prefix, _) => isOuterRef(prefix)
-      case _ => false
-    }
-    def containsOuterRefs(tp: Type): Boolean = tp match
-      case tp: SingletonType => isOuterRef(tp)
-      case tp: AndOrType => containsOuterRefs(tp.tp1) || containsOuterRefs(tp.tp2)
-      case _ => false
-    tree match {
-      case _: This | _: Ident => isOuterRef(tree.tpe)
-      case nw: New =>
-        val newCls = nw.tpe.classSymbol
-        isOuterSym(newCls.owner.enclosingClass) ||
-        hasOuterPrefix(nw.tpe) ||
-        newCls.owner.isTerm && cls.isProperlyContainedIn(newCls)
-          // newCls might get proxies for free variables. If current class is
-          // properly contained in newCls, it needs an outer path to newCls access the
-          // proxies and forward them to the new instance.
-      case app: TypeApply if app.symbol.isTypeTest =>
-        // Type tests of singletons translate to `eq` tests with references, which might require outer pointers
-        containsOuterRefs(app.args.head.tpe)
-      case _ =>
-        false
-    }
-  }
+  def referencesOuter(cls: Symbol, tree: Tree)(using Context): Boolean =
+
+    val test = new TreeAccumulator[Boolean]:
+      private var inInline = false
+
+      def isOuterSym(sym: Symbol) =
+        !sym.isStaticOwner && cls.isProperlyContainedIn(sym)
+
+      def isOuterRef(ref: Type): Boolean = ref match
+        case ref: ThisType =>
+          isOuterSym(ref.cls)
+        case ref: TermRef =>
+          if (ref.prefix ne NoPrefix)
+            !ref.symbol.isStatic && isOuterRef(ref.prefix)
+          else (
+            ref.symbol.isOneOf(HoistableFlags) &&
+              // ref.symbol will be placed in enclosing class scope by LambdaLift, so it might need
+              // an outer path then.
+              isOuterSym(ref.symbol.owner.enclosingClass)
+            ||
+              // If not hoistable, ref.symbol will get a proxy in immediately enclosing class. If this properly
+              // contains the current class, it needs an outer path.
+              // If the symbol is hoistable, it might have free variables for which the same
+              // reasoning applies. See pos/i1664.scala
+              ctx.owner.enclosingClass.owner.enclosingClass.isContainedIn(ref.symbol.owner)
+            )
+        case _ => false
+
+      def hasOuterPrefix(tp: Type): Boolean = tp.stripped match
+        case AppliedType(tycon, _) => hasOuterPrefix(tycon)
+        case TypeRef(prefix, _) => isOuterRef(prefix)
+        case _ => false
+
+      def containsOuterRefsAtTopLevel(tp: Type): Boolean = tp match
+        case tp: SingletonType => isOuterRef(tp)
+        case tp: AndOrType => containsOuterRefsAtTopLevel(tp.tp1) || containsOuterRefsAtTopLevel(tp.tp2)
+        case _ => false
+
+      def containsOuterRefsAnywhere(tp: Type): Boolean =
+        tp.existsPart({
+            case t: SingletonType => isOuterRef(t)
+            case _ => false
+          }, StopAt.Static)
+
+      def containsOuterRefs(t: Tree): Boolean = t match
+        case _: This | _: Ident => isOuterRef(t.tpe)
+        case nw: New =>
+          val newType = nw.tpe.dealias
+          val newCls = newType.classSymbol
+          isOuterSym(newCls.owner.enclosingClass) ||
+          hasOuterPrefix(newType) ||
+          newCls.owner.isTerm && cls.isProperlyContainedIn(newCls)
+            // newCls might get proxies for free variables. If current class is
+            // properly contained in newCls, it needs an outer path to newCls access the
+            // proxies and forward them to the new instance.
+        case app: TypeApply if app.symbol.isTypeTest =>
+          // Type tests of singletons translate to `eq` tests with references, which might require outer pointers
+          containsOuterRefsAtTopLevel(app.args.head.tpe.dealias)
+        case t: TypeTree if inInline =>
+          // Expansions of inline methods must be able to address outer types
+          containsOuterRefsAnywhere(t.tpe.dealias)
+        case _ =>
+          false
+
+      def apply(x: Boolean, t: Tree)(using Context) =
+        if x || containsOuterRefs(t) then true
+        else t match
+          case t: DefDef if t.symbol.isInlineMethod =>
+            val saved = inInline
+            inInline = true
+            try foldOver(x, t)
+            finally inInline = saved
+          case _ =>
+            foldOver(x, t)
+
+    test(false, tree)
+  end referencesOuter
 
   private final val HoistableFlags = Method | Lazy | Module
 
@@ -317,6 +344,12 @@ object ExplicitOuter {
         case _ =>
           // Need to be careful to dealias before erasure, otherwise we lose prefixes.
           atPhaseNoLater(erasurePhase)(outerPrefix(tpe.underlying))
+          	// underlying is fine here and below since we are calling this after erasure.
+          	// However, there is some weird stuff going on with parboiled2 where an
+          	// AppliedType with a type alias as constructor is fed to outerPrefix.
+          	// For some other unknown reason this works with underlying but not with superType.
+          	// I was not able to minimize the problem and parboiled2 spits out way too much
+          	// macro generated code to be able to pinpoint the root problem.
       }
     case tpe: TypeProxy =>
       outerPrefix(tpe.underlying)

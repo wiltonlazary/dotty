@@ -1,5 +1,13 @@
-import language.experimental.fewerBraces
+import language.`3.3`
 
-object Test:
+def Test =
 
-  assert((new Object: Any).isInstanceOf[Object])
+  val xo: Option[Int] = Some(1)
+
+  val y =
+    xo.fold:
+      22
+    .apply: x =>
+      x + 1
+  println(y)
+

@@ -10,10 +10,12 @@ import util.SrcPos
 import NameOps._
 import collection.mutable
 import reporting._
-import Checking.checkNoPrivateLeaks
+import Checking.{checkNoPrivateLeaks, checkNoWildcard}
+import cc.CaptureSet
 
 trait TypeAssigner {
-  import tpd._
+  import tpd.*
+  import TypeAssigner.*
 
   /** The qualifying class of a this or super with prefix `qual` (which might be empty).
    *  @param packageOk   The qualifier may refer to a package.
@@ -29,8 +31,9 @@ trait TypeAssigner {
         c
       case _ =>
         report.error(
-          if (qual.isEmpty) tree.show + " can be used only in a class, object, or template"
-          else qual.show + " is not an enclosing class", tree.srcPos)
+          if qual.isEmpty then em"$tree can be used only in a class, object, or template"
+          else em"$qual is not an enclosing class",
+          tree.srcPos)
         NoSymbol
     }
   }
@@ -125,7 +128,7 @@ trait TypeAssigner {
     def arrayElemType = qual1.tpe.widen match
       case JavaArrayType(elemtp) => elemtp
       case qualType =>
-        report.error("Expected Array but was " + qualType.show, tree.srcPos)
+        report.error(em"Expected Array but was $qualType", tree.srcPos)
         defn.NothingType
 
     val name = tree.name
@@ -165,26 +168,21 @@ trait TypeAssigner {
       case _ => false
     def addendum = err.selectErrorAddendum(tree, qual, qualType, importSuggestionAddendum, foundWithoutNull)
     val msg: Message =
-      if tree.name == nme.CONSTRUCTOR then ex"$qualType does not have a constructor"
+      if tree.name == nme.CONSTRUCTOR then em"$qualType does not have a constructor"
       else NotAMember(qualType, tree.name, kind, addendum)
     errorType(msg, tree.srcPos)
 
   def inaccessibleErrorType(tpe: NamedType, superAccess: Boolean, pos: SrcPos)(using Context): Type =
-    val pre = tpe.prefix
-    val name = tpe.name
-    val alts = tpe.denot.alternatives.map(_.symbol).filter(_.exists)
-    val whatCanNot = alts match
-      case Nil =>
-        em"$name cannot"
-      case sym :: Nil =>
-        em"${if (sym.owner == pre.typeSymbol) sym.show else sym.showLocated} cannot"
-      case _ =>
-        em"none of the overloaded alternatives named $name can"
-    val where = if (ctx.owner.exists) s" from ${ctx.owner.enclosingClass}" else ""
-    val whyNot = new StringBuffer
-    alts.foreach(_.isAccessibleFrom(pre, superAccess, whyNot))
     if tpe.isError then tpe
-    else errorType(ex"$whatCanNot be accessed as a member of $pre$where.$whyNot", pos)
+    else errorType(CannotBeAccessed(tpe, superAccess), pos)
+
+  def processAppliedType(tree: untpd.Tree, tp: Type)(using Context): Type = tp match
+    case AppliedType(tycon, args) =>
+      val constr = tycon.typeSymbol
+      if constr == defn.andType then AndType(args(0), args(1))
+      else if constr == defn.orType then OrType(args(0), args(1), soft = false)
+      else tp
+    case _ => tp
 
   /** Type assignment method. Each method takes as parameters
    *   - an untpd.Tree to which it assigns a type,
@@ -228,7 +226,7 @@ trait TypeAssigner {
     val cls = qualifyingClass(tree, tree.qual.name, packageOK = false)
     tree.withType(
         if (cls.isClass) cls.thisType
-        else errorType("not a legal qualifying class for this", tree.srcPos))
+        else errorType(em"not a legal qualifying class for this", tree.srcPos))
   }
 
   def superType(qualType: Type, mix: untpd.Ident, mixinClass: Symbol, pos: SrcPos)(using Context) =
@@ -242,10 +240,10 @@ trait TypeAssigner {
           case Nil =>
             errorType(SuperQualMustBeParent(mix, cls), pos)
           case p :: q :: _ =>
-            errorType("ambiguous parent class qualifier", pos)
+            errorType(em"ambiguous parent class qualifier", pos)
         }
         val owntype =
-          if (mixinClass.exists) mixinClass.appliedRef
+          if (mixinClass.exists) mixinClass.typeRef
           else if (!mix.isEmpty) findMixinSuper(cls.info)
           else if (ctx.erasedTypes) cls.info.firstParent.typeConstructor
           else {
@@ -286,19 +284,20 @@ trait TypeAssigner {
   def assignType(tree: untpd.Apply, fn: Tree, args: List[Tree])(using Context): Apply = {
     val ownType = fn.tpe.widen match {
       case fntpe: MethodType =>
-        if (fntpe.paramInfos.hasSameLengthAs(args) || ctx.phase.prev.relaxedTyping)
-          safeSubstMethodParams(fntpe, args.tpes)
+        if fntpe.paramInfos.hasSameLengthAs(args) || ctx.phase.prev.relaxedTyping then
+          if fntpe.isResultDependent then safeSubstMethodParams(fntpe, args.tpes)
+          else fntpe.resultType // fast path optimization
         else
-          errorType(i"wrong number of arguments at ${ctx.phase.prev} for $fntpe: ${fn.tpe}, expected: ${fntpe.paramInfos.length}, found: ${args.length}", tree.srcPos)
+          errorType(em"wrong number of arguments at ${ctx.phase.prev} for $fntpe: ${fn.tpe}, expected: ${fntpe.paramInfos.length}, found: ${args.length}", tree.srcPos)
       case t =>
         if (ctx.settings.Ydebug.value) new FatalError("").printStackTrace()
-        errorType(err.takesNoParamsStr(fn, ""), tree.srcPos)
+        errorType(err.takesNoParamsMsg(fn, ""), tree.srcPos)
     }
     ConstFold.Apply(tree.withType(ownType))
   }
 
   def assignType(tree: untpd.TypeApply, fn: Tree, args: List[Tree])(using Context): TypeApply = {
-    def fail = tree.withType(errorType(err.takesNoParamsStr(fn, "type "), tree.srcPos))
+    def fail = tree.withType(errorType(err.takesNoParamsMsg(fn, "type "), tree.srcPos))
     ConstFold(fn.tpe.widen match {
       case pt: TypeLambda =>
         tree.withType {
@@ -353,7 +352,7 @@ trait TypeAssigner {
             // reference to a polytype would have to be a fresh copy of that type,
             // but we want to avoid that because it would increase compilation cost.
             // See pos/i6682a.scala for a test case where the defensive copying matters.
-            val ensureFresh = new TypeMap:
+            val ensureFresh = new TypeMap with CaptureSet.IdempotentCaptRefMap:
               def apply(tp: Type) = mapOver(
                 if tp eq pt then pt.newLikeThis(pt.paramNames, pt.paramInfos, pt.resType)
                 else tp)
@@ -444,13 +443,8 @@ trait TypeAssigner {
     if (cases.isEmpty) tree.withType(expr.tpe)
     else tree.withType(TypeComparer.lub(expr.tpe :: cases.tpes))
 
-  def assignType(tree: untpd.SeqLiteral, elems: List[Tree], elemtpt: Tree)(using Context): SeqLiteral = {
-    val ownType = tree match {
-      case tree: untpd.JavaSeqLiteral => defn.ArrayOf(elemtpt.tpe)
-      case _ => if (ctx.erasedTypes) defn.SeqType else defn.SeqType.appliedTo(elemtpt.tpe)
-    }
-    tree.withType(ownType)
-  }
+  def assignType(tree: untpd.SeqLiteral, elems: List[Tree], elemtpt: Tree)(using Context): SeqLiteral =
+    tree.withType(seqLitType(tree, elemtpt.tpe))
 
   def assignType(tree: untpd.SingletonTypeTree, ref: Tree)(using Context): SingletonTypeTree =
     tree.withType(ref.tpe)
@@ -474,11 +468,10 @@ trait TypeAssigner {
     assert(!hasNamedArg(args) || ctx.reporter.errorsReported, tree)
     val tparams = tycon.tpe.typeParams
     val ownType =
-      if (tparams.hasSameLengthAs(args))
-        if (tycon.symbol == defn.andType) AndType(args(0).tpe, args(1).tpe)
-        else if (tycon.symbol == defn.orType) OrType(args(0).tpe, args(1).tpe, soft = false)
-        else tycon.tpe.appliedTo(args.tpes)
-      else wrongNumberOfTypeArgs(tycon.tpe, tparams, args, tree.srcPos)
+      if tparams.hasSameLengthAs(args) then
+        processAppliedType(tree, tycon.tpe.appliedTo(args.tpes))
+      else
+        wrongNumberOfTypeArgs(tycon.tpe, tparams, args, tree.srcPos)
     tree.withType(ownType)
   }
 
@@ -545,5 +538,9 @@ trait TypeAssigner {
 
 }
 
+object TypeAssigner extends TypeAssigner:
+  def seqLitType(tree: untpd.SeqLiteral, elemType: Type)(using Context) = tree match
+    case tree: untpd.JavaSeqLiteral => defn.ArrayOf(elemType)
+    case _ => if ctx.erasedTypes then defn.SeqType else defn.SeqType.appliedTo(elemType)
 
-object TypeAssigner extends TypeAssigner
+

@@ -3,32 +3,39 @@ import com.typesafe.tools.mima.core._
 
 object MiMaFilters {
   val Library: Seq[ProblemFilter] = Seq(
-    // APIs that must be added in 3.2.0
-    ProblemFilters.exclude[ReversedMissingMethodProblem]("scala.quoted.runtime.QuoteUnpickler.unpickleExprV2"),
-    ProblemFilters.exclude[DirectMissingMethodProblem]("scala.quoted.runtime.QuoteUnpickler.unpickleExprV2"),
-    ProblemFilters.exclude[ReversedMissingMethodProblem]("scala.quoted.runtime.QuoteUnpickler.unpickleTypeV2"),
-    ProblemFilters.exclude[DirectMissingMethodProblem]("scala.quoted.runtime.QuoteUnpickler.unpickleTypeV2"),
-    ProblemFilters.exclude[MissingClassProblem]("scala.runtime.TupleMirror"),
-    ProblemFilters.exclude[MissingTypesProblem]("scala.Tuple$package$EmptyTuple$"), // we made the empty tuple a case object
-    ProblemFilters.exclude[DirectMissingMethodProblem]("scala.runtime.Scala3RunTime.nnFail"),
-    ProblemFilters.exclude[DirectMissingMethodProblem]("scala.runtime.Scala3RunTime.nnFail"),
-    ProblemFilters.exclude[DirectMissingMethodProblem]("scala.runtime.LazyVals.getOffsetStatic"), // Added for #14780
-    ProblemFilters.exclude[DirectMissingMethodProblem]("scala.runtime.LazyVals.getOffsetStatic"), // Added for #14780
-    ProblemFilters.exclude[MissingFieldProblem]("scala.runtime.stdLibPatches.language.3.2-migration"),
-    ProblemFilters.exclude[MissingFieldProblem]("scala.runtime.stdLibPatches.language.3.2"),
-    ProblemFilters.exclude[MissingClassProblem]("scala.runtime.stdLibPatches.language$3$u002E2$"),
-    ProblemFilters.exclude[MissingClassProblem]("scala.runtime.stdLibPatches.language$3$u002E2$minusmigration$"),
-    ProblemFilters.exclude[MissingClassProblem]("scala.runtime.coverage.Invoker"),
-    ProblemFilters.exclude[MissingClassProblem]("scala.runtime.coverage.Invoker$"),
+    ProblemFilters.exclude[DirectMissingMethodProblem]("scala.caps.unsafeBox"),
+    ProblemFilters.exclude[DirectMissingMethodProblem]("scala.caps.unsafeUnbox"),
+    ProblemFilters.exclude[DirectMissingMethodProblem]("scala.CanEqual.canEqualMap"),
+    ProblemFilters.exclude[MissingClassProblem]("scala.caps$Pure"),
+    ProblemFilters.exclude[MissingClassProblem]("scala.caps$unsafe$"),
+    ProblemFilters.exclude[MissingFieldProblem]("scala.runtime.stdLibPatches.language.3.3-migration"),
+    ProblemFilters.exclude[MissingFieldProblem]("scala.runtime.stdLibPatches.language.3.3"),
+    ProblemFilters.exclude[MissingClassProblem]("scala.runtime.stdLibPatches.language$3$u002E3$"),
+    ProblemFilters.exclude[MissingClassProblem]("scala.runtime.stdLibPatches.language$3$u002E3$minusmigration$"),
+    ProblemFilters.exclude[MissingClassProblem]("scala.util.boundary"),
+    ProblemFilters.exclude[MissingClassProblem]("scala.util.boundary$"),
+    ProblemFilters.exclude[MissingClassProblem]("scala.util.boundary$Break"),
+    ProblemFilters.exclude[MissingClassProblem]("scala.util.boundary$Label"),
 
-    // APIs will be added in 3.2.0
-    ProblemFilters.exclude[ReversedMissingMethodProblem]("scala.quoted.Quotes#reflectModule#AppliedTypeModule.apply"),
-    ProblemFilters.exclude[DirectMissingMethodProblem]("scala.quoted.Quotes#reflectModule#AppliedTypeModule.apply"),
-    ProblemFilters.exclude[ReversedMissingMethodProblem]("scala.quoted.Quotes#reflectModule#SymbolMethods.asQuotes"),
-    ProblemFilters.exclude[ReversedMissingMethodProblem]("scala.quoted.Quotes#reflectModule#SymbolMethods.typeRef"),
-    ProblemFilters.exclude[ReversedMissingMethodProblem]("scala.quoted.Quotes#reflectModule#SymbolMethods.termRef"),
-    ProblemFilters.exclude[ReversedMissingMethodProblem]("scala.quoted.Quotes#reflectModule#TypeTreeModule.ref"),
+    // Scala.js only: new runtime support class in 3.2.3; not available to users
+    ProblemFilters.exclude[MissingClassProblem]("scala.scalajs.runtime.AnonFunctionXXL"),
 
-    ProblemFilters.exclude[MissingClassProblem]("scala.annotation.since"),
+    //  New experimental features in 3.3.X
+    ProblemFilters.exclude[MissingFieldProblem]("scala.runtime.stdLibPatches.language#experimental.clauseInterleaving"),
+    ProblemFilters.exclude[MissingClassProblem]("scala.runtime.stdLibPatches.language$experimental$clauseInterleaving$"),
+    ProblemFilters.exclude[MissingFieldProblem]("scala.runtime.stdLibPatches.language#experimental.into"),
+    ProblemFilters.exclude[MissingClassProblem]("scala.runtime.stdLibPatches.language$experimental$into$"),
+    // end of New experimental features in 3.3.X
+  )
+  val TastyCore: Seq[ProblemFilter] = Seq(
+    ProblemFilters.exclude[DirectMissingMethodProblem]("dotty.tools.tasty.TastyBuffer.reset"),
+    ProblemFilters.exclude[DirectMissingMethodProblem]("dotty.tools.tasty.TastyFormat.APPLYsigpoly"),
+    ProblemFilters.exclude[DirectMissingMethodProblem]("dotty.tools.tasty.TastyHash.pjwHash64"),
+    ProblemFilters.exclude[DirectMissingMethodProblem]("dotty.tools.tasty.util.Util.dble")
+  )
+  val Interfaces: Seq[ProblemFilter] = Seq(
+    ProblemFilters.exclude[ReversedMissingMethodProblem]("dotty.tools.dotc.interfaces.Diagnostic.diagnosticRelatedInformation"),
+    ProblemFilters.exclude[DirectMissingMethodProblem]("dotty.tools.dotc.interfaces.Diagnostic.diagnosticRelatedInformation"),
+    ProblemFilters.exclude[MissingClassProblem]("dotty.tools.dotc.interfaces.DiagnosticRelatedInformation")
   )
 }

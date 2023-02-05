@@ -20,6 +20,7 @@ import printing.Texts._
 import printing.Printer
 import io.AbstractFile
 import util.common._
+import util.NoSourcePosition
 import typer.Checking.checkNonCyclic
 import typer.Nullables._
 import transform.SymUtils._
@@ -32,6 +33,7 @@ import scala.collection.mutable
 import scala.collection.mutable.ListBuffer
 import scala.annotation.switch
 import reporting._
+import cc.{adaptFunctionTypeUnderPureFuns, adaptByNameArgUnderPureFuns}
 
 object Scala2Unpickler {
 
@@ -87,7 +89,11 @@ object Scala2Unpickler {
         val sourceModule = denot.sourceModule.orElse {
           // For non-toplevel modules, `sourceModule` won't be set when completing
           // the module class, we need to go find it ourselves.
-          NamerOps.findModuleBuddy(cls.name.sourceModuleName, denot.owner.info.decls)
+          val modName = cls.name.sourceModuleName
+          val alternate =
+            if cls.privateWithin.exists && cls.owner.is(Trait) then modName.expandedName(cls.owner)
+            else EmptyTermName
+          NamerOps.findModuleBuddy(modName, denot.owner.info.decls, alternate)
         }
         denot.owner.thisType.select(sourceModule)
       else selfInfo
@@ -743,7 +749,7 @@ class Scala2Unpickler(bytes: Array[Byte], classRoot: ClassDenotation, moduleClas
       val anyTypes = boundSyms map (_ => defn.AnyType)
       val boundBounds = boundSyms map (_.info.bounds.hi)
       val tp2 = tp1.subst(boundSyms, boundBounds).subst(boundSyms, anyTypes)
-      report.warning(FailureToEliminateExistential(tp, tp1, tp2, boundSyms, classRoot.symbol))
+      report.warning(FailureToEliminateExistential(tp, tp1, tp2, boundSyms, classRoot.symbol), NoSourcePosition)
       tp2
     }
     else tp1
@@ -815,14 +821,16 @@ class Scala2Unpickler(bytes: Array[Byte], classRoot: ClassDenotation, moduleClas
         }
         val tycon = select(pre, sym)
         val args = until(end, () => readTypeRef())
-        if (sym == defn.ByNameParamClass2x) ExprType(args.head)
+        if (sym == defn.ByNameParamClass2x) ExprType(args.head.adaptByNameArgUnderPureFuns)
         else if (ctx.settings.scalajs.value && args.length == 2 &&
             sym.owner == JSDefinitions.jsdefn.ScalaJSJSPackageClass && sym == JSDefinitions.jsdefn.PseudoUnionClass) {
           // Treat Scala.js pseudo-unions as real unions, this requires a
           // special-case in erasure, see TypeErasure#eraseInfo.
           OrType(args(0), args(1), soft = false)
         }
-        else if (args.nonEmpty) tycon.safeAppliedTo(EtaExpandIfHK(sym.typeParams, args.map(translateTempPoly)))
+        else if args.nonEmpty then
+          tycon.safeAppliedTo(EtaExpandIfHK(sym.typeParams, args.map(translateTempPoly)))
+            .adaptFunctionTypeUnderPureFuns
         else if (sym.typeParams.nonEmpty) tycon.EtaExpand(sym.typeParams)
         else tycon
       case TYPEBOUNDStpe =>

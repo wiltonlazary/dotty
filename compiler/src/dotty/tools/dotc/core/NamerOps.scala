@@ -67,11 +67,11 @@ object NamerOps:
       completer.withSourceModule(findModuleBuddy(name.sourceModuleName, scope))
 
   /** Find moduleClass/sourceModule in effective scope */
-  def findModuleBuddy(name: Name, scope: Scope)(using Context) = {
-    val it = scope.lookupAll(name).filter(_.is(Module))
-    if (it.hasNext) it.next()
-    else NoSymbol.assertingErrorsReported(s"no companion $name in $scope")
-  }
+  def findModuleBuddy(name: Name, scope: Scope, alternate: Name = EmptyTermName)(using Context): Symbol =
+    var it = scope.lookupAll(name).filter(_.is(Module))
+    if !alternate.isEmpty then it ++= scope.lookupAll(alternate).filter(_.is(Module))
+    if it.hasNext then it.next()
+    else NoSymbol.assertingErrorsReported(em"no companion $name in $scope")
 
   /** If a class has one of these flags, it does not get a constructor companion */
   private val NoConstructorProxyNeededFlags = Abstract | Trait | Case | Synthetic | Module | Invisible
@@ -190,5 +190,33 @@ object NamerOps:
     modcls.info = constructorCompanionCompleter(cls)(modul, modcls)
     cls.registeredCompanion = modcls
     modcls.registeredCompanion = cls
+
+  /** For secondary constructors, make it known in the context that their type parameters
+   *  are aliases of the class type parameters.
+   *  @return  if `sym` is a secondary constructor, a fresh context that
+   *           contains GADT constraints linking the type parameters.
+   */
+  def linkConstructorParams(sym: Symbol)(using Context): Context =
+    if sym.isConstructor && !sym.isPrimaryConstructor then
+      sym.rawParamss match
+        case (tparams @ (tparam :: _)) :: _ if tparam.isType =>
+          val rhsCtx = ctx.fresh.setFreshGADTBounds
+          linkConstructorParams(sym, tparams, rhsCtx)
+          rhsCtx
+        case _ =>
+          ctx
+    else ctx
+
+  /** For secondary constructor `sym`, make it known in the given context `rhsCtx`
+   *  that their type parameters are aliases of the class type parameters. This is done
+   *  by (ab?)-using GADT constraints. See pos/i941.scala.
+   */
+  def linkConstructorParams(sym: Symbol, tparams: List[Symbol], rhsCtx: Context)(using Context): Unit =
+    rhsCtx.gadtState.addToConstraint(tparams)
+    tparams.lazyZip(sym.owner.typeParams).foreach { (psym, tparam) =>
+      val tr = tparam.typeRef
+      rhsCtx.gadtState.addBound(psym, tr, isUpper = false)
+      rhsCtx.gadtState.addBound(psym, tr, isUpper = true)
+    }
 
 end NamerOps

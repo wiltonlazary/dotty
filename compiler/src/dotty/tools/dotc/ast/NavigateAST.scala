@@ -4,7 +4,7 @@ package ast
 import core.Contexts._
 import core.Decorators._
 import util.Spans._
-import Trees.{MemberDef, DefTree, WithLazyField}
+import Trees.{MemberDef, DefTree, WithLazyFields}
 import dotty.tools.dotc.core.Types.AnnotatedType
 import dotty.tools.dotc.core.Types.ImportType
 import dotty.tools.dotc.core.Types.Type
@@ -106,12 +106,15 @@ object NavigateAST {
         // FIXME: We shouldn't be manually forcing trees here, we should replace
         // our usage of `productIterator` by something in `Positioned` that takes
         // care of low-level details like this for us.
-        p match {
-          case p: WithLazyField[?] =>
-            p.forceIfLazy
+        p match
+          case p: WithLazyFields => p.forceFields()
           case _ =>
-        }
-        childPath(p.productIterator, p :: path)
+        val iterator = p match
+          case defdef: DefTree[?] =>
+            p.productIterator ++ defdef.mods.productIterator
+          case _ =>
+            p.productIterator
+        childPath(iterator, p :: path)
       }
       else {
         p match {
