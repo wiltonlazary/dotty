@@ -100,8 +100,7 @@ With this setup, the following calls are all well-formed, and they all normalize
 ```scala
 minimum(xs)
 maximum(xs)(using descending)
-maximum(xs)(using descending(using listOrd))
-maximum(xs)(using descending(using listOrd(using intOrd)))
+maximum(xs)(using descending(using intOrd))
 ```
 
 ## Multiple `using` Clauses
@@ -151,7 +150,7 @@ def summon[T](using x: T): x.type = x
 
 Here is the new syntax of parameters and arguments seen as a delta from the [standard context free syntax of Scala 3](../syntax.md). `using` is a soft keyword, recognized only at the start of a parameter or argument list. It can be used as a normal identifier everywhere else.
 
-```
+```ebnf
 ClsParamClause      ::=  ... | UsingClsParamClause
 DefParamClause      ::=  ... | UsingParamClause
 UsingClsParamClause ::=  ‘(’ ‘using’ (ClsParams | Types) ‘)’

@@ -14,15 +14,16 @@ import util.Spans._
 import SymUtils._
 import NameKinds._
 import dotty.tools.dotc.ast.tpd
-import StagingContext._
 
 import scala.collection.mutable
 import dotty.tools.dotc.core.Annotations._
 import dotty.tools.dotc.core.Names._
 import dotty.tools.dotc.core.StdNames._
 import dotty.tools.dotc.quoted._
-import dotty.tools.dotc.transform.TreeMapWithStages._
 import dotty.tools.dotc.config.ScalaRelease.*
+import dotty.tools.dotc.staging.QuoteContext.*
+import dotty.tools.dotc.staging.StagingLevel.*
+import dotty.tools.dotc.staging.QuoteTypeTags
 
 import scala.annotation.constructorOnly
 
@@ -77,7 +78,7 @@ class Splicing extends MacroTransform:
 
   override def run(using Context): Unit =
     if ctx.compilationUnit.needsStaging then
-      super.run(using freshStagingContext)
+      super.run
 
   protected def newTransformer(using Context): Transformer = Level0QuoteTransformer
 
@@ -190,7 +191,7 @@ class Splicing extends MacroTransform:
     private var refBindingMap = mutable.Map.empty[Symbol, (Tree, Symbol)]
     /** Reference to the `Quotes` instance of the current level 1 splice */
     private var quotes: Tree | Null = null // TODO: add to the context
-    private var healedTypes: PCPCheckAndHeal.QuoteTypeTags | Null = null // TODO: add to the context
+    private var healedTypes: QuoteTypeTags | Null = null // TODO: add to the context
 
     def transformSplice(tree: tpd.Tree, tpe: Type, holeIdx: Int)(using Context): tpd.Tree =
       assert(level == 0)
@@ -206,6 +207,14 @@ class Splicing extends MacroTransform:
 
     override def transform(tree: tpd.Tree)(using Context): tpd.Tree =
       tree match
+        case tree: Select if tree.isTerm && isCaptured(tree.symbol) =>
+          tree.symbol.allOverriddenSymbols.find(sym => !isCaptured(sym.owner)) match
+            case Some(sym) =>
+              // virtualize call on overridden symbol that is not defined in a non static class
+              transform(tree.qualifier.select(sym))
+            case _ =>
+              report.error(em"Can not use reference to staged local ${tree.symbol} defined in an outer quote.\n\nThis can work if ${tree.symbol.owner} would extend a top level interface that defines ${tree.symbol}.", tree)
+              tree
         case tree: RefTree =>
           if tree.isTerm then
             if isCaptured(tree.symbol) then
@@ -242,9 +251,16 @@ class Splicing extends MacroTransform:
                 else args.mapConserve(arg => transformLevel0QuoteContent(arg)(using quoteContext))
               }
               cpy.Apply(tree)(cpy.Select(sel)(cpy.Apply(app)(fn, newArgs), nme.apply), quotesArgs)
-        case Apply(TypeApply(_, List(tpt)), List(quotes))
+        case Apply(TypeApply(typeof, List(tpt)), List(quotes))
         if tree.symbol == defn.QuotedTypeModule_of && containsCapturedType(tpt.tpe) =>
-          ref(capturedType(tpt))(using ctx.withSource(tree.source)).withSpan(tree.span)
+          val newContent = capturedPartTypes(tpt)
+          newContent match
+            case block: Block =>
+              inContext(ctx.withSource(tree.source)) {
+                Apply(TypeApply(typeof, List(newContent)), List(quotes)).withSpan(tree.span)
+              }
+            case _ =>
+              ref(capturedType(newContent))(using ctx.withSource(tree.source)).withSpan(tree.span)
         case CapturedApplication(fn, argss) =>
           transformCapturedApplication(tree, fn, argss)
         case _ =>
@@ -253,7 +269,7 @@ class Splicing extends MacroTransform:
     private def transformLevel0QuoteContent(tree: Tree)(using Context): Tree =
       // transform and collect new healed types
       val old = healedTypes
-      healedTypes = new PCPCheckAndHeal.QuoteTypeTags(tree.span)
+      healedTypes = new QuoteTypeTags(tree.span)
       val tree1 = transform(tree)
       val newHealedTypes = healedTypes.nn.getTypeTags
       healedTypes = old
@@ -335,16 +351,45 @@ class Splicing extends MacroTransform:
       val bindingSym = refBindingMap.getOrElseUpdate(tree.symbol, (tree, newBinding))._2
       ref(bindingSym)
 
-    private def capturedType(tree: Tree)(using Context): Symbol =
-      val tpe = tree.tpe.widenTermRefExpr
-      def newBinding = newSymbol(
+    private def newQuotedTypeClassBinding(tpe: Type)(using Context) =
+      newSymbol(
         spliceOwner,
         UniqueName.fresh(nme.Type).toTermName,
         Param,
         defn.QuotedTypeClass.typeRef.appliedTo(tpe),
       )
-      val bindingSym = refBindingMap.getOrElseUpdate(tree.symbol, (TypeTree(tree.tpe), newBinding))._2
+
+    private def capturedType(tree: Tree)(using Context): Symbol =
+      val tpe = tree.tpe.widenTermRefExpr
+      val bindingSym = refBindingMap
+        .getOrElseUpdate(tree.symbol, (TypeTree(tree.tpe), newQuotedTypeClassBinding(tpe)))._2
       bindingSym
+
+    private def capturedPartTypes(tpt: Tree)(using Context): Tree =
+      val old = healedTypes
+      healedTypes = QuoteTypeTags(tpt.span)
+      val capturePartTypes = new TypeMap {
+        def apply(tp: Type) = tp match {
+          case typeRef: TypeRef if containsCapturedType(typeRef) =>
+            val termRef = refBindingMap
+              .getOrElseUpdate(typeRef.symbol, (TypeTree(typeRef), newQuotedTypeClassBinding(typeRef)))._2.termRef
+            val tagRef = healedTypes.nn.getTagRef(termRef)
+            tagRef
+          case _ =>
+            mapOver(tp)
+        }
+      }
+      val captured = capturePartTypes(tpt.tpe.widenTermRefExpr)
+      val newHealedTypes = healedTypes.nn.getTypeTags
+      healedTypes = old
+      tpt match
+        case block: Block =>
+          cpy.Block(block)(newHealedTypes ::: block.stats, TypeTree(captured))
+        case _ =>
+          if newHealedTypes.nonEmpty then
+            cpy.Block(tpt)(newHealedTypes, TypeTree(captured))
+          else
+            tpt
 
     private def getTagRefFor(tree: Tree)(using Context): Tree =
       val capturedTypeSym = capturedType(tree)

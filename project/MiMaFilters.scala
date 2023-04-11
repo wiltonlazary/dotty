@@ -16,6 +16,7 @@ object MiMaFilters {
     ProblemFilters.exclude[MissingClassProblem]("scala.util.boundary$"),
     ProblemFilters.exclude[MissingClassProblem]("scala.util.boundary$Break"),
     ProblemFilters.exclude[MissingClassProblem]("scala.util.boundary$Label"),
+    ProblemFilters.exclude[MissingClassProblem]("scala.quoted.runtime.QuoteMatching$"),
 
     // Scala.js only: new runtime support class in 3.2.3; not available to users
     ProblemFilters.exclude[MissingClassProblem]("scala.scalajs.runtime.AnonFunctionXXL"),
@@ -26,6 +27,11 @@ object MiMaFilters {
     ProblemFilters.exclude[MissingFieldProblem]("scala.runtime.stdLibPatches.language#experimental.into"),
     ProblemFilters.exclude[MissingClassProblem]("scala.runtime.stdLibPatches.language$experimental$into$"),
     // end of New experimental features in 3.3.X
+
+    // Added java.io.Serializable as LazyValControlState supertype
+    ProblemFilters.exclude[MissingTypesProblem]("scala.runtime.LazyVals$LazyValControlState"),
+    ProblemFilters.exclude[MissingTypesProblem]("scala.runtime.LazyVals$Waiting"),
+
   )
   val TastyCore: Seq[ProblemFilter] = Seq(
     ProblemFilters.exclude[DirectMissingMethodProblem]("dotty.tools.tasty.TastyBuffer.reset"),

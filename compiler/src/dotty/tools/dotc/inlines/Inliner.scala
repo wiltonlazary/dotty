@@ -21,7 +21,9 @@ import collection.mutable
 import reporting.trace
 import util.Spans.Span
 import dotty.tools.dotc.transform.Splicer
+import dotty.tools.dotc.transform.BetaReduce
 import quoted.QuoteUtils
+import staging.StagingLevel
 import scala.annotation.constructorOnly
 
 /** General support for inlining */
@@ -811,9 +813,9 @@ class Inliner(val call: tpd.Tree)(using Context):
           case Quoted(Spliced(inner)) => inner
           case _ => tree
       val locked = ctx.typerState.ownedVars
-      val res = cancelQuotes(constToLiteral(betaReduce(super.typedApply(tree, pt)))) match {
+      val res = cancelQuotes(constToLiteral(BetaReduce(super.typedApply(tree, pt)))) match {
         case res: Apply if res.symbol == defn.QuotedRuntime_exprSplice
-                        && StagingContext.level == 0
+                        && StagingLevel.level == 0
                         && !hasInliningErrors =>
           val expanded = expandMacro(res.args.head, tree.srcPos)
           transform.TreeChecker.checkMacroGeneratedTree(res, expanded)
@@ -825,7 +827,7 @@ class Inliner(val call: tpd.Tree)(using Context):
 
     override def typedTypeApply(tree: untpd.TypeApply, pt: Type)(using Context): Tree =
       val locked = ctx.typerState.ownedVars
-      val tree1 = inlineIfNeeded(constToLiteral(betaReduce(super.typedTypeApply(tree, pt))), pt, locked)
+      val tree1 = inlineIfNeeded(constToLiteral(BetaReduce(super.typedTypeApply(tree, pt))), pt, locked)
       if tree1.symbol.isQuote then
         ctx.compilationUnit.needsStaging = true
       tree1
@@ -1006,7 +1008,7 @@ class Inliner(val call: tpd.Tree)(using Context):
             super.transform(t1)
           case t: Apply =>
             val t1 = super.transform(t)
-            if (t1 `eq` t) t else reducer.betaReduce(t1)
+            if (t1 `eq` t) t else BetaReduce(t1)
           case Block(Nil, expr) =>
             super.transform(expr)
           case _ =>
@@ -1025,7 +1027,7 @@ class Inliner(val call: tpd.Tree)(using Context):
   }
 
   private def expandMacro(body: Tree, splicePos: SrcPos)(using Context) = {
-    assert(StagingContext.level == 0)
+    assert(StagingLevel.level == 0)
     val inlinedFrom = enclosingInlineds.last
     val dependencies = macroDependencies(body)
     val suspendable = ctx.compilationUnit.isSuspendable

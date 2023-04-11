@@ -72,7 +72,7 @@ class MemberRenderer(signatureRenderer: SignatureRenderer)(using DocContext) ext
 
   def source(m: Member): Seq[AppliedTag] =
     summon[DocContext].sourceLinks.pathTo(m).fold(Nil){ link =>
-      tableRow("Source", a(href := link)(m.sources.fold("(source)")(_.path.getFileName().toString())))
+      tableRow("Source", a(href := link, target := "_blank")(m.sources.fold("(source)")(_.path.getFileName().toString())))
     }
 
   def deprecation(m: Member): Seq[AppliedTag] = m.deprecated.fold(Nil){ a =>
@@ -414,7 +414,7 @@ class MemberRenderer(signatureRenderer: SignatureRenderer)(using DocContext) ext
           val argsSig = SignatureBuilder()
             .functionTermParameters(on.argsLists)
             .content
-          val sig = typeSig ++ Signature(Plain(s"(${on.name}: ")) ++ on.signature ++ Signature(Plain(")")) ++ argsSig
+          val sig = typeSig ++ argsSig
           MGroup(span(cls := "groupHeader")(sig.map(renderElement(_))), members.sortBy(_.name).toSeq, on.name) -> on.position
       }.toSeq.sortBy(_._2).map(_._1)
 

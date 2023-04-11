@@ -151,7 +151,7 @@ trait BCodeSkelBuilder extends BCodeHelpers {
 
         // !!! Part of this logic is duplicated in JSCodeGen.genCompilationUnit
         claszSymbol.info.decls.foreach { f =>
-          if f.isField && !f.name.is(LazyBitMapName) then
+          if f.isField && !f.name.is(LazyBitMapName) && !f.name.is(LazyLocalName) then
             f.setFlag(JavaStatic)
         }
 
@@ -271,7 +271,7 @@ trait BCodeSkelBuilder extends BCodeHelpers {
       val flags = javaFlags(claszSymbol)
 
       val thisSignature = getGenericSignature(claszSymbol, claszSymbol.owner)
-      cnode.visit(classfileVersion, flags,
+      cnode.visit(backendUtils.classfileVersion, flags,
                   thisName, thisSignature,
                   superClass, interfaceNames.toArray)
 

@@ -1,6 +1,7 @@
 package scala.quoted
 
 import scala.annotation.experimental
+import scala.annotation.implicitNotFound
 import scala.reflect.TypeTest
 
 /** Current Quotes in scope
@@ -21,7 +22,25 @@ transparent inline def quotes(using q: Quotes): q.type = q
  *
  *  It contains the low-level Typed AST API metaprogramming API.
  *  This API does not have the static type guarantees that `Expr` and `Type` provide.
+ *  `Quotes` are generated from an enclosing `${ ... }` or `scala.staging.run`. For example:
+ *  ```scala sc:nocompile
+ *  import scala.quoted._
+ *  inline def myMacro: Expr[T] =
+ *    ${ /* (quotes: Quotes) ?=> */ myExpr }
+ *  def myExpr(using Quotes): Expr[T] =
+ *    '{ f(${ /* (quotes: Quotes) ?=> */ myOtherExpr }) }
+ *  }
+ *  def myOtherExpr(using Quotes): Expr[U] = '{ ... }
+ *  ```
  */
+
+@implicitNotFound("""explain=Maybe this method is missing a `(using Quotes)` parameter.
+
+Maybe that splice `$ { ... }` is missing?
+Given instances of `Quotes` are generated from an enclosing splice `$ { ... }` (or `scala.staging.run` call).
+A splice can be thought as a method with the following signature.
+  def $[T](body: Quotes ?=> Expr[T]): T
+""")
 trait Quotes { self: runtime.QuoteUnpickler & runtime.QuoteMatching =>
 
   // Extension methods for `Expr[T]`
@@ -2374,7 +2393,16 @@ trait Quotes { self: runtime.QuoteUnpickler & runtime.QuoteMatching =>
         /** Is this a given parameter clause `(using X1, ..., Xn)` or `(using x1: X1, ..., xn: Xn)` */
         def isGiven: Boolean
         /** Is this a erased parameter clause `(erased x1: X1, ..., xn: Xn)` */
+        // TODO:deprecate in 3.4 and stabilize `erasedArgs` and `hasErasedArgs`.
+        // @deprecated("Use `hasErasedArgs`","3.4")
         def isErased: Boolean
+
+        /** List of `erased` flags for each parameter of the clause */
+        @experimental
+        def erasedArgs: List[Boolean]
+        /** Whether the clause has any erased parameters */
+        @experimental
+        def hasErasedArgs: Boolean
     end TermParamClauseMethods
 
     /** A type parameter clause `[X1, ..., Xn]` */
@@ -2650,7 +2678,7 @@ trait Quotes { self: runtime.QuoteUnpickler & runtime.QuoteMatching =>
         */
         def isContextFunctionType: Boolean
 
-        /** Is this type an erased function type?
+        /** Is this type a function type with erased parameters?
         *
         *  @see `isFunctionType`
         */
@@ -3145,7 +3173,17 @@ trait Quotes { self: runtime.QuoteUnpickler & runtime.QuoteMatching =>
       extension (self: MethodType)
         /** Is this the type of using parameter clause `(implicit X1, ..., Xn)`, `(using X1, ..., Xn)` or `(using x1: X1, ..., xn: Xn)` */
         def isImplicit: Boolean
+        /** Is this the type of erased parameter clause `(erased x1: X1, ..., xn: Xn)` */
+        // TODO:deprecate in 3.4 and stabilize `erasedParams` and `hasErasedParams`.
+        // @deprecated("Use `hasErasedParams`","3.4")
         def isErased: Boolean
+
+        /** List of `erased` flags for each parameters of the clause */
+        @experimental
+        def erasedParams: List[Boolean]
+        /** Whether the clause has any erased parameters */
+        @experimental
+        def hasErasedParams: Boolean
         def param(idx: Int): TypeRepr
       end extension
     end MethodTypeMethods
@@ -4254,7 +4292,30 @@ trait Quotes { self: runtime.QuoteUnpickler & runtime.QuoteMatching =>
       *   -  ...
       *   -  Nth element is `FunctionN`
       */
+      // TODO: deprecate in 3.4 and stabilize FunctionClass(Int)/FunctionClass(Int,Boolean)
+      // @deprecated("Use overload of `FunctionClass` with 1 or 2 arguments","3.4")
       def FunctionClass(arity: Int, isImplicit: Boolean = false, isErased: Boolean = false): Symbol
+
+      /** Class symbol of a function class `scala.FunctionN`.
+       *
+       *  @param arity the arity of the function where `0 <= arity`
+       *  @return class symbol of `scala.FunctionN` where `N == arity`
+       */
+      @experimental
+      def FunctionClass(arity: Int): Symbol
+
+      /** Class symbol of a context function class `scala.FunctionN` or `scala.ContextFunctionN`.
+       *
+       *  @param arity the arity of the function where `0 <= arity`
+       *  @param isContextual if it is a `scala.ContextFunctionN`
+       *  @return class symbol of `scala.FunctionN` or `scala.ContextFunctionN` where `N == arity`
+       */
+      @experimental
+      def FunctionClass(arity: Int, isContextual: Boolean): Symbol
+
+      /** The `scala.runtime.ErasedFunction` built-in trait. */
+      @experimental
+      def ErasedFunctionClass: Symbol
 
       /** Function-like object that maps arity to symbols for classes `scala.TupleX`.
       *   -  0th element is `NoSymbol`
@@ -4851,7 +4912,7 @@ trait Quotes { self: runtime.QuoteUnpickler & runtime.QuoteMatching =>
                 case self: ValDef => self
             }
             val body = tree.body.map(transformStatement(_)(tree.symbol))
-            ClassDef.copy(tree)(tree.name, constructor.asInstanceOf[DefDef], parents, self, body) // cast as workaround for lampepfl/dotty#14821. TODO remove when referenceVersion >= 3.2.0-RC1
+            ClassDef.copy(tree)(tree.name, constructor, parents, self, body)
           case tree: Import =>
             Import.copy(tree)(transformTerm(tree.expr)(owner), tree.selectors)
           case tree: Export =>

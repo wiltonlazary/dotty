@@ -19,7 +19,6 @@ import scala.collection.mutable
 import dotty.tools.dotc.core.Annotations._
 import dotty.tools.dotc.core.StdNames._
 import dotty.tools.dotc.quoted._
-import dotty.tools.dotc.transform.TreeMapWithStages._
 import dotty.tools.dotc.inlines.Inlines
 
 import scala.annotation.constructorOnly
@@ -93,7 +92,7 @@ class PickleQuotes extends MacroTransform {
       case _ =>
 
   override def run(using Context): Unit =
-    if (ctx.compilationUnit.needsStaging) super.run(using freshStagingContext)
+    if (ctx.compilationUnit.needsStaging) super.run
 
   protected def newTransformer(using Context): Transformer = new Transformer {
     override def transform(tree: tpd.Tree)(using Context): tpd.Tree =
@@ -158,13 +157,18 @@ class PickleQuotes extends MacroTransform {
         override def apply(tp: Type): Type = tp match
           case tp: TypeRef if tp.typeSymbol.isTypeSplice =>
             apply(tp.dealias)
-          case tp @ TypeRef(pre, _) if pre == NoPrefix || pre.termSymbol.isLocal =>
+          case tp @ TypeRef(pre, _) if isLocalPath(pre) =>
             val hiBound = tp.typeSymbol.info match
               case info: ClassInfo => info.parents.reduce(_ & _)
               case info => info.hiBound
             apply(hiBound)
           case tp =>
             mapOver(tp)
+
+        private def isLocalPath(tp: Type): Boolean = tp match
+          case NoPrefix => true
+          case tp: TermRef if !tp.symbol.is(Package) => isLocalPath(tp.prefix)
+          case tp => false
       }
 
       /** Remove references to local types that will not be defined in this quote */
@@ -315,14 +319,17 @@ object PickleQuotes {
               defn.QuotedExprClass.typeRef.appliedTo(defn.AnyType)),
             args =>
               val cases = termSplices.map { case (splice, idx) =>
-                val defn.FunctionOf(argTypes, defn.FunctionOf(quotesType :: _, _, _, _), _, _) = splice.tpe: @unchecked
+                val defn.FunctionOf(argTypes, defn.FunctionOf(quotesType :: _, _, _), _) = splice.tpe: @unchecked
                 val rhs = {
                   val spliceArgs = argTypes.zipWithIndex.map { (argType, i) =>
                     args(1).select(nme.apply).appliedTo(Literal(Constant(i))).asInstance(argType)
                   }
                   val Block(List(ddef: DefDef), _) = splice: @unchecked
                   // TODO: beta reduce inner closure? Or wait until BetaReduce phase?
-                  BetaReduce(ddef, spliceArgs).select(nme.apply).appliedTo(args(2).asInstance(quotesType))
+                  BetaReduce(
+                    splice
+                      .select(nme.apply).appliedToArgs(spliceArgs))
+                      .select(nme.apply).appliedTo(args(2).asInstance(quotesType))
                 }
                 CaseDef(Literal(Constant(idx)), EmptyTree, rhs)
               }

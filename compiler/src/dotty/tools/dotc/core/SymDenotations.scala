@@ -255,10 +255,13 @@ object SymDenotations {
     def annotationsCarrying(meta: Set[Symbol], orNoneOf: Set[Symbol] = Set.empty)(using Context): List[Annotation] =
       annotations.filterConserve(_.hasOneOfMetaAnnotation(meta, orNoneOf = orNoneOf))
 
-    def copyAndKeepAnnotationsCarrying(phase: DenotTransformer, meta: Set[Symbol], orNoneOf: Set[Symbol] = Set.empty)(using Context): Unit =
-      if annotations.nonEmpty then
+    def keepAnnotationsCarrying(phase: DenotTransformer, meta: Set[Symbol], orNoneOf: Set[Symbol] = Set.empty)(using Context): Unit =
+      updateAnnotationsAfter(phase, annotationsCarrying(meta, orNoneOf = orNoneOf))
+
+    def updateAnnotationsAfter(phase: DenotTransformer, annots: List[Annotation])(using Context): Unit =
+      if annots ne annotations then
         val cpy = copySymDenotation()
-        cpy.annotations = annotationsCarrying(meta, orNoneOf = orNoneOf)
+        cpy.annotations = annots
         cpy.installAfter(phase)
 
     /** Optionally, the annotation matching the given class symbol */
@@ -2223,13 +2226,12 @@ object SymDenotations {
             def computeApplied = {
               btrCache(tp) = NoPrefix
               val baseTp =
-                if (tycon.typeSymbol eq symbol) tp
-                else (tycon.typeParams: @unchecked) match {
+                if (tycon.typeSymbol eq symbol) && !tycon.isLambdaSub then tp
+                else (tycon.typeParams: @unchecked) match
                   case LambdaParam(_, _) :: _ =>
                     recur(tp.superType)
                   case tparams: List[Symbol @unchecked] =>
                     recur(tycon).substApprox(tparams, args)
-                }
               record(tp, baseTp)
               baseTp
             }

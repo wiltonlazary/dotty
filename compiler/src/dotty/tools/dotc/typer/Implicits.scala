@@ -31,6 +31,7 @@ import Feature.migrateTo3
 import config.Printers.{implicits, implicitsDetailed}
 import collection.mutable
 import reporting._
+import transform.Splicer
 import annotation.tailrec
 
 import scala.annotation.internal.sharable
@@ -567,6 +568,12 @@ object Implicits:
 
     def msg(using Context) = em"Failed to synthesize an instance of type ${clarify(expectedType)}:${formatReasons}"
 
+  class MacroErrorsFailure(errors: List[Diagnostic.Error],
+                           val expectedType: Type,
+                           val argument: Tree) extends SearchFailureType {
+    def msg(using Context): Message =
+      em"${errors.map(_.msg).mkString("\n")}"
+  }
 end Implicits
 
 import Implicits._
@@ -615,6 +622,8 @@ trait ImplicitRunInfo:
                 traverse(t.prefix)
             case t: ThisType if t.cls.is(Module) && t.cls.isStaticOwner =>
               traverse(t.cls.sourceModule.termRef)
+            case t: ThisType =>
+              traverse(t.tref)
             case t: ConstantType =>
               traverse(t.underlying)
             case t: TypeParamRef =>
@@ -736,6 +745,7 @@ trait ImplicitRunInfo:
    *   - If `T` is a singleton reference, the anchors of its underlying type, plus,
    *     if `T` is of the form `(P#x).type`, the anchors of `P`.
    *   - If `T` is the this-type of a static object, the anchors of a term reference to that object.
+   *   - If `T` is some other this-type `P.this.type`, the anchors of `P`.
    *   - If `T` is some other type, the union of the anchors of each constituent type of `T`.
    *
    *  The _implicit scope_ of a type `tp` is the smallest set S of term references (i.e. TermRefs)
@@ -959,7 +969,7 @@ trait Implicits:
       case Select(qual, nme.apply) if defn.isFunctionType(qual.tpe.widen) =>
         val qt = qual.tpe.widen
         val qt1 = qt.dealiasKeepAnnots
-        def addendum = if (qt1 eq qt) "" else (i"\nThe required type is an alias of: $qt1")
+        def addendum = if (qt1 eq qt) "" else (i"\nWhere $qt is an alias of: $qt1")
         i"parameter of ${qual.tpe.widen}$addendum"
       case _ =>
         i"${ if paramName.is(EvidenceParamName) then "an implicit parameter"
@@ -1157,19 +1167,22 @@ trait Implicits:
       if ctx.reporter.hasErrors
          || !cand.ref.symbol.isAccessibleFrom(cand.ref.prefix)
       then
-        ctx.reporter.removeBufferedMessages
-        adapted.tpe match {
+        val res = adapted.tpe match {
           case _: SearchFailureType => SearchFailure(adapted)
           case error: PreviousErrorType if !adapted.symbol.isAccessibleFrom(cand.ref.prefix) =>
             SearchFailure(adapted.withType(new NestedFailure(error.msg, pt)))
-          case _ =>
+          case tpe =>
             // Special case for `$conforms` and `<:<.refl`. Showing them to the users brings
             // no value, so we instead report a `NoMatchingImplicitsFailure`
             if (adapted.symbol == defn.Predef_conforms || adapted.symbol == defn.SubType_refl)
               NoMatchingImplicitsFailure
+            else if Splicer.inMacroExpansion && tpe <:< pt then
+              SearchFailure(adapted.withType(new MacroErrorsFailure(ctx.reporter.allErrors.reverse, pt, argument)))
             else
               SearchFailure(adapted.withType(new MismatchedImplicit(ref, pt, argument)))
         }
+        ctx.reporter.removeBufferedMessages
+        res
       else
         SearchSuccess(adapted, ref, cand.level, cand.isExtension)(ctx.typerState, ctx.gadt)
     }

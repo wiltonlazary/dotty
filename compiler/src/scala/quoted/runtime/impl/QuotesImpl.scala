@@ -371,16 +371,15 @@ class QuotesImpl private (using val ctx: Context) extends Quotes, QuoteUnpickler
     object Term extends TermModule:
       def betaReduce(tree: Term): Option[Term] =
         tree match
-          case app @ tpd.Apply(tpd.Select(fn, nme.apply), args) if dotc.core.Symbols.defn.isFunctionType(fn.tpe) =>
-            val app1 = dotc.transform.BetaReduce(app, fn, args)
-            if app1 eq app then None
-            else Some(app1.withSpan(tree.span))
           case tpd.Block(Nil, expr) =>
             for e <- betaReduce(expr) yield tpd.cpy.Block(tree)(Nil, e)
           case tpd.Inlined(_, Nil, expr) =>
             betaReduce(expr)
           case _ =>
-            None
+            val tree1 = dotc.transform.BetaReduce(tree)
+            if tree1 eq tree then None
+            else Some(tree1.withSpan(tree.span))
+
     end Term
 
     given TermMethods: TermMethods with
@@ -1582,8 +1581,12 @@ class QuotesImpl private (using val ctx: Context) extends Quotes, QuoteUnpickler
           self.nonEmpty && self.head.symbol.is(dotc.core.Flags.Implicit)
         def isGiven: Boolean =
           self.nonEmpty && self.head.symbol.is(dotc.core.Flags.Given)
-        def isErased: Boolean =
-          self.nonEmpty && self.head.symbol.is(dotc.core.Flags.Erased)
+        def isErased: Boolean = false
+
+        def erasedArgs: List[Boolean] =
+          self.map(_.symbol.is(dotc.core.Flags.Erased))
+        def hasErasedArgs: Boolean =
+          self.exists(_.symbol.is(dotc.core.Flags.Erased))
     end TermParamClauseMethods
 
     type TypeParamClause = List[tpd.TypeDef]
@@ -2140,9 +2143,12 @@ class QuotesImpl private (using val ctx: Context) extends Quotes, QuoteUnpickler
 
     given MethodTypeMethods: MethodTypeMethods with
       extension (self: MethodType)
-        def isErased: Boolean = self.isErasedMethod
+        def isErased: Boolean = false
         def isImplicit: Boolean = self.isImplicitMethod
         def param(idx: Int): TypeRepr = self.newParamRef(idx)
+
+        def erasedParams: List[Boolean] = self.erasedParams
+        def hasErasedParams: Boolean = self.hasErasedParams
       end extension
     end MethodTypeMethods
 
@@ -2168,11 +2174,11 @@ class QuotesImpl private (using val ctx: Context) extends Quotes, QuoteUnpickler
       end extension
     end PolyTypeMethods
 
-    type TypeLambda = dotc.core.Types.TypeLambda
+    type TypeLambda = dotc.core.Types.HKTypeLambda
 
     object TypeLambdaTypeTest extends TypeTest[TypeRepr, TypeLambda]:
       def unapply(x: TypeRepr): Option[TypeLambda & x.type] = x match
-        case tpe: (Types.TypeLambda & x.type) => Some(tpe)
+        case tpe: (Types.HKTypeLambda & x.type) => Some(tpe)
         case _ => None
     end TypeLambdaTypeTest
 
@@ -2768,7 +2774,15 @@ class QuotesImpl private (using val ctx: Context) extends Quotes, QuoteUnpickler
       def SomeModule: Symbol = dotc.core.Symbols.defn.SomeClass.companionModule
       def ProductClass: Symbol = dotc.core.Symbols.defn.ProductClass
       def FunctionClass(arity: Int, isImplicit: Boolean = false, isErased: Boolean = false): Symbol =
-        dotc.core.Symbols.defn.FunctionSymbol(arity, isImplicit, isErased)
+        if arity < 0 then throw IllegalArgumentException(s"arity: $arity")
+        if isErased then
+          throw new Exception("Erased function classes are not supported. Use a refined `scala.runtime.ErasedFunction`")
+        else dotc.core.Symbols.defn.FunctionSymbol(arity, isImplicit)
+      def FunctionClass(arity: Int): Symbol =
+        FunctionClass(arity, false, false)
+      def FunctionClass(arity: Int, isContextual: Boolean): Symbol =
+        FunctionClass(arity, isContextual, false)
+      def ErasedFunctionClass = dotc.core.Symbols.defn.ErasedFunctionClass
       def TupleClass(arity: Int): Symbol =
         dotc.core.Symbols.defn.TupleType(arity).nn.classSymbol.asClass
       def isTupleClass(sym: Symbol): Boolean =
@@ -3066,7 +3080,7 @@ class QuotesImpl private (using val ctx: Context) extends Quotes, QuoteUnpickler
 
       lazy val ConstantCode: Printer[Constant] = new Printer[Constant]:
         def show(const: Constant): String =
-          const.show(using ctx.fresh.setSetting(ctx.settings.color, "never"))
+          const.show(using ctx.withoutColors)
 
       lazy val ConstantStructure: Printer[Constant] = new Printer[Constant]:
         def show(const: Constant): String =
@@ -3093,14 +3107,14 @@ class QuotesImpl private (using val ctx: Context) extends Quotes, QuoteUnpickler
     new TypeImpl(tree, SpliceScope.getCurrent).asInstanceOf[scala.quoted.Type[T]]
 
   object ExprMatch extends ExprMatchModule:
-    def unapply[TypeBindings <: Tuple, Tup <: Tuple](scrutinee: scala.quoted.Expr[Any])(using pattern: scala.quoted.Expr[Any]): Option[Tup] =
+    def unapply[TypeBindings, Tup <: Tuple](scrutinee: scala.quoted.Expr[Any])(using pattern: scala.quoted.Expr[Any]): Option[Tup] =
       val scrutineeTree = reflect.asTerm(scrutinee)
       val patternTree = reflect.asTerm(pattern)
       treeMatch(scrutineeTree, patternTree).asInstanceOf[Option[Tup]]
   end ExprMatch
 
   object TypeMatch extends TypeMatchModule:
-    def unapply[TypeBindings <: Tuple, Tup <: Tuple](scrutinee: scala.quoted.Type[?])(using pattern: scala.quoted.Type[?]): Option[Tup] =
+    def unapply[TypeBindings, Tup <: Tuple](scrutinee: scala.quoted.Type[?])(using pattern: scala.quoted.Type[?]): Option[Tup] =
       val scrutineeTree = reflect.TypeTree.of(using scrutinee)
       val patternTree = reflect.TypeTree.of(using pattern)
       treeMatch(scrutineeTree, patternTree).asInstanceOf[Option[Tup]]
@@ -3133,20 +3147,27 @@ class QuotesImpl private (using val ctx: Context) extends Quotes, QuoteUnpickler
         ctx1.gadtState.addToConstraint(typeHoles)
         ctx1
 
-    val matchings = QuoteMatcher.treeMatch(scrutinee, pat1)(using ctx1)
+    // After matching and doing all subtype checks, we have to approximate all the type bindings
+    // that we have found, seal them in a quoted.Type and add them to the result
+    def typeHoleApproximation(sym: Symbol) =
+      val fromAboveAnnot = sym.hasAnnotation(dotc.core.Symbols.defn.QuotedRuntimePatterns_fromAboveAnnot)
+      val fullBounds = ctx1.gadt.fullBounds(sym)
+      if fromAboveAnnot then fullBounds.hi else fullBounds.lo
 
-    if typeHoles.isEmpty then matchings
-    else {
-      // After matching and doing all subtype checks, we have to approximate all the type bindings
-      // that we have found, seal them in a quoted.Type and add them to the result
-      def typeHoleApproximation(sym: Symbol) =
-        val fromAboveAnnot = sym.hasAnnotation(dotc.core.Symbols.defn.QuotedRuntimePatterns_fromAboveAnnot)
-        val fullBounds = ctx1.gadt.fullBounds(sym)
-        val tp = if fromAboveAnnot then fullBounds.hi else fullBounds.lo
-        reflect.TypeReprMethods.asType(tp)
-      matchings.map { tup =>
-        Tuple.fromIArray(typeHoles.map(typeHoleApproximation).toArray.asInstanceOf[IArray[Object]]) ++ tup
+    QuoteMatcher.treeMatch(scrutinee, pat1)(using ctx1).map { matchings =>
+      import QuoteMatcher.MatchResult.*
+      lazy val spliceScope = SpliceScope.getCurrent
+      val typeHoleApproximations = typeHoles.map(typeHoleApproximation)
+      val typeHoleMapping = Map(typeHoles.zip(typeHoleApproximations)*)
+      val typeHoleMap = new Types.TypeMap {
+          def apply(tp: Types.Type): Types.Type = tp match
+            case Types.TypeRef(Types.NoPrefix, _) => typeHoleMapping.getOrElse(tp.typeSymbol, tp)
+            case _ => mapOver(tp)
       }
+      val matchedExprs = matchings.map(_.toExpr(typeHoleMap, spliceScope))
+      val matchedTypes = typeHoleApproximations.map(reflect.TypeReprMethods.asType)
+      val results = matchedTypes ++ matchedExprs
+      Tuple.fromIArray(IArray.unsafeFromArray(results.toArray))
     }
   }
 

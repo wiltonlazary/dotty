@@ -14,7 +14,12 @@ on:
     ## - both (tags or tags-ignore) and (branches or branches-ignore),
     ## - or neither of them.
     ## But it's important to not have only one or the other.
+    tags:
+      - '*'
+    branches-ignore:
+      - 'gh-readonly-queue/**'
   pull_request:
+  merge_group:
   schedule:
     - cron: '0 3 * * *'  # Every day at 3 AM
   workflow_dispatch:
@@ -97,6 +102,7 @@ jobs:
         - ${{ github.workspace }}/../../cache/general:/root/.cache
     if: "github.event_name == 'schedule' && github.repository == 'lampepfl/dotty'
          || github.event_name == 'push'
+         || github.event_name == 'merge_group'
          || (
            github.event_name == 'pull_request'
            && !contains(github.event.pull_request.body, '[skip ci]')
@@ -142,6 +148,7 @@ jobs:
            github.event_name == 'push'
            && github.ref != 'refs/heads/main'
          )
+         || github.event_name == 'merge_group'
          || (
            github.event_name == 'pull_request'
            && !contains(github.event.pull_request.body, '[skip ci]')
@@ -218,6 +225,7 @@ jobs:
         - ${{ github.workspace }}/../../cache/general:/root/.cache
     if: "github.event_name == 'schedule' && github.repository == 'lampepfl/dotty'
          || github.event_name == 'push'
+         || github.event_name == 'merge_group'
          || (
            github.event_name == 'pull_request'
            && !contains(github.event.pull_request.body, '[skip ci]')
@@ -258,6 +266,7 @@ jobs:
         - ${{ github.workspace }}/../../cache/general:/root/.cache
     if: "github.event_name == 'schedule' && github.repository == 'lampepfl/dotty'
          || github.event_name == 'push'
+         || github.event_name == 'merge_group'
          || (
            github.event_name == 'pull_request'
            && !contains(github.event.pull_request.body, '[skip ci]')
@@ -306,6 +315,7 @@ jobs:
         - ${{ github.workspace }}/../../cache/general:/root/.cache
     if: "github.event_name == 'schedule' && github.repository == 'lampepfl/dotty'
          || github.event_name == 'push'
+         || github.event_name == 'merge_group'
          || (
            github.event_name == 'pull_request'
            && !contains(github.event.pull_request.body, '[skip ci]')
@@ -354,6 +364,7 @@ jobs:
         - ${{ github.workspace }}/../../cache/general:/root/.cache
     if: "github.event_name == 'schedule' && github.repository == 'lampepfl/dotty'
          || github.event_name == 'push'
+         || github.event_name == 'merge_group'
          || (
            github.event_name == 'pull_request'
            && !contains(github.event.pull_request.body, '[skip ci]')

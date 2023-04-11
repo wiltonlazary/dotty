@@ -10,7 +10,7 @@ import scala.annotation.*
 object LazyVals {
   @nowarn
   private[this] val unsafe: sun.misc.Unsafe = {
-    def throwInitializationException() = 
+    def throwInitializationException() =
       throw new ExceptionInInitializerError(
         new IllegalStateException("Can't find instance of sun.misc.Unsafe")
       )
@@ -45,7 +45,8 @@ object LazyVals {
 
   /* ------------- Start of public API ------------- */
 
-  sealed trait LazyValControlState
+  // This trait extends Serializable to fix #16806 that caused a race condition
+  sealed trait LazyValControlState extends Serializable
 
   /**
    * Used to indicate the state of a lazy val that is being

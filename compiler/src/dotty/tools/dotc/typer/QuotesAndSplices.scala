@@ -11,11 +11,12 @@ import dotty.tools.dotc.core.Decorators._
 import dotty.tools.dotc.core.Flags._
 import dotty.tools.dotc.core.NameKinds.PatMatGivenVarName
 import dotty.tools.dotc.core.Names._
-import dotty.tools.dotc.core.StagingContext._
 import dotty.tools.dotc.core.StdNames._
 import dotty.tools.dotc.core.Symbols._
 import dotty.tools.dotc.core.Types._
 import dotty.tools.dotc.inlines.PrepareInlineable
+import dotty.tools.dotc.staging.QuoteContext.*
+import dotty.tools.dotc.staging.StagingLevel.*
 import dotty.tools.dotc.transform.SymUtils._
 import dotty.tools.dotc.typer.Implicits._
 import dotty.tools.dotc.typer.Inferencing._
@@ -91,7 +92,7 @@ trait QuotesAndSplices {
         tree.withType(UnspecifiedErrorType)
       }
     else {
-      if (StagingContext.level == 0) {
+      if (level == 0) {
         // Mark the first inline method from the context as a macro
         def markAsMacro(c: Context): Unit =
           if (c.owner eq c.outer.owner) markAsMacro(c.outer)
@@ -249,7 +250,7 @@ trait QuotesAndSplices {
             val pat1 = if (patType eq patType1) pat else pat.withType(patType1)
             patBuf += pat1
           }
-        case Select(pat, _) if tree.symbol.isTypeSplice =>
+        case Select(pat: Bind, _) if tree.symbol.isTypeSplice =>
           val sym = tree.tpe.dealias.typeSymbol
           if sym.exists then
             val tdef = TypeDef(sym.asType).withSpan(sym.span)
@@ -364,7 +365,7 @@ trait QuotesAndSplices {
    *
    *  ```
    *  case scala.internal.quoted.Expr.unapply[
-   *          Tuple1[t @ _], // Type binging definition
+   *          KList[t @ _, KNil], // Type binging definition
    *          Tuple2[Type[t], Expr[List[t]]] // Typing the result of the pattern match
    *        ](
    *          Tuple2.unapply
@@ -411,7 +412,7 @@ trait QuotesAndSplices {
     val replaceBindings = new ReplaceBindings
     val patType = defn.tupleType(splices.tpes.map(tpe => replaceBindings(tpe.widen)))
 
-    val typeBindingsTuple = tpd.tupleTypeTree(typeBindings.values.toList)
+    val typeBindingsTuple = tpd.hkNestedPairsTypeTree(typeBindings.values.toList)
 
     val replaceBindingsInTree = new TreeMap {
       private var bindMap = Map.empty[Symbol, Symbol]
