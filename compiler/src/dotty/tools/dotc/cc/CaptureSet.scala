@@ -70,7 +70,7 @@ sealed abstract class CaptureSet extends Showable:
     assert(!isConst)
     asInstanceOf[Var]
 
-  /** Does this capture set contain the root reference `*` as element? */
+  /** Does this capture set contain the root reference `cap` as element? */
   final def isUniversal(using Context) =
     elems.exists {
       case ref: TermRef => ref.symbol == defn.captureRoot
@@ -133,7 +133,7 @@ sealed abstract class CaptureSet extends Showable:
    *  for `x` in a state where we assume all supersets of `x` have just the elements
    *  known at this point. On the other hand if x's capture set has no known elements,
    *  a set `cs` might account for `x` only if it subsumes `x` or it contains the
-   *  root capability `*`.
+   *  root capability `cap`.
    */
   def mightAccountFor(x: CaptureRef)(using Context): Boolean =
     reporting.trace(i"$this mightAccountFor $x, ${x.captureSetOfInfo}?", show = true) {
@@ -210,10 +210,11 @@ sealed abstract class CaptureSet extends Showable:
    *  any of the elements in the constant capture set `that`
    */
   def -- (that: CaptureSet.Const)(using Context): CaptureSet =
-    val elems1 = elems.filter(!that.accountsFor(_))
-    if elems1.size == elems.size then this
-    else if this.isConst then Const(elems1)
-    else Diff(asVar, that)
+    if this.isConst then
+      val elems1 = elems.filter(!that.accountsFor(_))
+      if elems1.size == elems.size then this else Const(elems1)
+    else
+      if that.isAlwaysEmpty then this else Diff(asVar, that)
 
   /** The largest subset (via <:<) of this capture set that does not account for `ref` */
   def - (ref: CaptureRef)(using Context): CaptureSet =
@@ -270,9 +271,14 @@ sealed abstract class CaptureSet extends Showable:
   def substParams(tl: BindingType, to: List[Type])(using Context) =
     map(Substituters.SubstParamsMap(tl, to))
 
-  /** Invoke handler if this set has (or later aquires) the root capability `*` */
+  /** Invoke handler if this set has (or later aquires) the root capability `cap` */
   def disallowRootCapability(handler: () => Context ?=> Unit)(using Context): this.type =
     if isUniversal then handler()
+    this
+
+  /** Invoke handler on the elements to check wellformedness of the capture set */
+  def ensureWellformed(handler: List[CaptureRef] => Context ?=> Unit)(using Context): this.type =
+    handler(elems.toList)
     this
 
   /** An upper approximation of this capture set, i.e. a constant set that is
@@ -319,7 +325,7 @@ object CaptureSet:
   /** The empty capture set `{}` */
   val empty: CaptureSet.Const = Const(emptySet)
 
-  /** The universal capture set `{*}` */
+  /** The universal capture set `{cap}` */
   def universal(using Context): CaptureSet =
     defn.captureRoot.termRef.singletonCaptureSet
 
@@ -350,6 +356,20 @@ object CaptureSet:
     override def toString = elems.toString
   end Const
 
+  /** A special capture set that gets added to the types of symbols that were not
+   *  themselves capture checked, in order to admit arbitrary corresponding capture
+   *  sets in subcapturing comparisons. Similar to platform types for explicit
+   *  nulls, this provides more lenient checking against compilation units that
+   *  were not yet compiled with capture checking on.
+   */
+  object Fluid extends Const(emptySet):
+    override def isAlwaysEmpty = false
+    override def addNewElems(elems: Refs, origin: CaptureSet)(using Context, VarState) = CompareResult.OK
+    override def accountsFor(x: CaptureRef)(using Context): Boolean = true
+    override def mightAccountFor(x: CaptureRef)(using Context): Boolean = true
+    override def toString = "<fluid>"
+  end Fluid
+
   /** The subclass of captureset variables with given initial elements */
   class Var(initialElems: Refs = emptySet) extends CaptureSet:
 
@@ -372,8 +392,11 @@ object CaptureSet:
     def isConst = isSolved
     def isAlwaysEmpty = false
 
-    /** A handler to be invoked if the root reference `*` is added to this set */
+    /** A handler to be invoked if the root reference `cap` is added to this set */
     var rootAddedHandler: () => Context ?=> Unit = () => ()
+
+    /** A handler to be invoked when new elems are added to this set */
+    var newElemAddedHandler: List[CaptureRef] => Context ?=> Unit = _ => ()
 
     var description: String = ""
 
@@ -405,7 +428,8 @@ object CaptureSet:
       if !isConst && recordElemsState() then
         elems ++= newElems
         if isUniversal then rootAddedHandler()
-        // assert(id != 2 || elems.size != 2, this)
+        newElemAddedHandler(newElems.toList)
+        // assert(id != 5 || elems.size != 3, this)
         (CompareResult.OK /: deps) { (r, dep) =>
           r.andAlso(dep.tryInclude(newElems, this))
         }
@@ -425,11 +449,15 @@ object CaptureSet:
       rootAddedHandler = handler
       super.disallowRootCapability(handler)
 
+    override def ensureWellformed(handler: List[CaptureRef] => (Context) ?=> Unit)(using Context): this.type =
+      newElemAddedHandler = handler
+      super.ensureWellformed(handler)
+
     private var computingApprox = false
 
     /** Roughly: the intersection of all constant known supersets of this set.
      *  The aim is to find an as-good-as-possible constant set that is a superset
-     *  of this set. The universal set {*} is a sound fallback.
+     *  of this set. The universal set {cap} is a sound fallback.
      */
     final def upperApprox(origin: CaptureSet)(using Context): CaptureSet =
       if computingApprox then universal
@@ -832,34 +860,44 @@ object CaptureSet:
   /** The capture set of the type underlying a CaptureRef */
   def ofInfo(ref: CaptureRef)(using Context): CaptureSet = ref match
     case ref: TermRef if ref.isRootCapability => ref.singletonCaptureSet
-    case _ => ofType(ref.underlying)
+    case _ => ofType(ref.underlying, followResult = true)
 
   /** Capture set of a type */
-  def ofType(tp: Type)(using Context): CaptureSet =
-    def recur(tp: Type): CaptureSet = tp.dealias match
-      case tp: TermRef =>
-        tp.captureSet
-      case tp: TermParamRef =>
-        tp.captureSet
-      case _: TypeRef =>
-        if tp.classSymbol.hasAnnotation(defn.CapabilityAnnot) then universal else empty
-      case _: TypeParamRef =>
-        empty
-      case CapturingType(parent, refs) =>
-        recur(parent) ++ refs
-      case AppliedType(tycon, args) =>
-        val cs = recur(tycon)
-        tycon.typeParams match
-          case tparams @ (LambdaParam(tl, _) :: _) => cs.substParams(tl, args)
-          case _ => cs
-      case tp: TypeProxy =>
-        recur(tp.underlying)
-      case AndType(tp1, tp2) =>
-        recur(tp1) ** recur(tp2)
-      case OrType(tp1, tp2) =>
-        recur(tp1) ++ recur(tp2)
-      case _ =>
-        empty
+  def ofType(tp: Type, followResult: Boolean)(using Context): CaptureSet =
+    def recur(tp: Type): CaptureSet = trace(i"ofType $tp, ${tp.getClass} $followResult", show = true):
+      tp.dealias match
+        case tp: TermRef =>
+          tp.captureSet
+        case tp: TermParamRef =>
+          tp.captureSet
+        case _: TypeRef =>
+          if tp.classSymbol.hasAnnotation(defn.CapabilityAnnot) then universal else empty
+        case _: TypeParamRef =>
+          empty
+        case CapturingType(parent, refs) =>
+          recur(parent) ++ refs
+        case tpd @ defn.RefinedFunctionOf(rinfo: MethodType) if followResult =>
+          ofType(tpd.parent, followResult = false)             // pick up capture set from parent type
+          ++ (recur(rinfo.resType)                             // add capture set of result
+          -- CaptureSet(rinfo.paramRefs.filter(_.isTracked)*)) // but disregard bound parameters
+        case tpd @ AppliedType(tycon, args) =>
+          if followResult && defn.isNonRefinedFunction(tpd) then
+            recur(args.last)
+              // must be (pure) FunctionN type since ImpureFunctions have already
+              // been eliminated in selector's dealias. Use capture set of result.
+          else
+            val cs = recur(tycon)
+            tycon.typeParams match
+              case tparams @ (LambdaParam(tl, _) :: _) => cs.substParams(tl, args)
+              case _ => cs
+        case tp: TypeProxy =>
+          recur(tp.underlying)
+        case AndType(tp1, tp2) =>
+          recur(tp1) ** recur(tp2)
+        case OrType(tp1, tp2) =>
+          recur(tp1) ++ recur(tp2)
+        case _ =>
+          empty
     recur(tp)
       .showing(i"capture set of $tp = $result", capt)
 

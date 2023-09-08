@@ -240,7 +240,7 @@ class Run(comp: Compiler, ictx: Context) extends ImplicitRunInfo with Constraint
 
       for (phase <- ctx.base.allPhases)
         if (phase.isRunnable)
-          Stats.trackTime(s"$phase ms ") {
+          Stats.trackTime(s"phase time ms/$phase") {
             val start = System.currentTimeMillis
             val profileBefore = profiler.beforePhase(phase)
             units = phase.runOn(units)
@@ -308,7 +308,7 @@ class Run(comp: Compiler, ictx: Context) extends ImplicitRunInfo with Constraint
 
   private def printTree(last: PrintedTree)(using Context): PrintedTree = {
     val unit = ctx.compilationUnit
-    val fusedPhase = ctx.phase.prevMega
+    val fusedPhase = ctx.phase.prev.megaPhase
     val echoHeader = f"[[syntax trees at end of $fusedPhase%25s]] // ${unit.source}"
     val tree = if ctx.isAfterTyper then unit.tpdTree else unit.untpdTree
     val treeString = fusedPhase.show(tree)

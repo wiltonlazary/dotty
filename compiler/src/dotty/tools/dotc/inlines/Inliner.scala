@@ -23,7 +23,7 @@ import util.Spans.Span
 import dotty.tools.dotc.transform.Splicer
 import dotty.tools.dotc.transform.BetaReduce
 import quoted.QuoteUtils
-import staging.StagingLevel
+import staging.StagingLevel.{level, spliceContext}
 import scala.annotation.constructorOnly
 
 /** General support for inlining */
@@ -129,7 +129,7 @@ object Inliner:
       new InlinerMap(typeMap, treeMap, oldOwners, newOwners, substFrom, substTo)
 
     override def transformInlined(tree: Inlined)(using Context) =
-      if tree.call.isEmpty then
+      if tree.inlinedFromOuterScope then
         tree.expansion match
           case expansion: TypeTree => expansion
           case _ => tree
@@ -177,7 +177,7 @@ class Inliner(val call: tpd.Tree)(using Context):
   /** A map from the classes of (direct and outer) this references in `rhsToInline`
    *  to references of their proxies.
    *  Note that we can't index by the ThisType itself since there are several
-   *  possible forms to express what is logicaly the same ThisType. E.g.
+   *  possible forms to express what is logically the same ThisType. E.g.
    *
    *     ThisType(TypeRef(ThisType(p), cls))
    *
@@ -201,17 +201,24 @@ class Inliner(val call: tpd.Tree)(using Context):
    *  to `buf`.
    *  @param name        the name of the parameter
    *  @param formal      the type of the parameter
-   *  @param arg         the argument corresponding to the parameter
+   *  @param arg0        the argument corresponding to the parameter
    *  @param buf         the buffer to which the definition should be appended
    */
   private[inlines] def paramBindingDef(name: Name, formal: Type, arg0: Tree,
                               buf: DefBuffer)(using Context): ValOrDefDef = {
     val isByName = formal.dealias.isInstanceOf[ExprType]
-    val arg = arg0 match {
-      case Typed(arg1, tpt) if tpt.tpe.isRepeatedParam && arg1.tpe.derivesFrom(defn.ArrayClass) =>
-        wrapArray(arg1, arg0.tpe.elemType)
-      case _ => arg0
-    }
+    val arg =
+      def dropNameArg(arg: Tree): Tree = arg match
+        case NamedArg(_, arg1) => arg1
+        case SeqLiteral(elems, tpt) =>
+          cpy.SeqLiteral(arg)(elems.mapConserve(dropNameArg), tpt)
+        case _ => arg
+      arg0 match
+        case Typed(seq, tpt) if tpt.tpe.isRepeatedParam =>
+          if seq.tpe.derivesFrom(defn.ArrayClass) then wrapArray(dropNameArg(seq), arg0.tpe.elemType)
+          else cpy.Typed(arg0)(dropNameArg(seq), tpt)
+        case arg0 =>
+          dropNameArg(arg0)
     val argtpe = arg.tpe.dealiasKeepAnnots.translateFromRepeated(toArray = false)
     val argIsBottom = argtpe.isBottomTypeAfterErasure
     val bindingType =
@@ -331,7 +338,7 @@ class Inliner(val call: tpd.Tree)(using Context):
 
   protected def hasOpaqueProxies = opaqueProxies.nonEmpty
 
-  /** Map first halfs of opaqueProxies pairs to second halfs, using =:= as equality */
+  /** Map first halves of opaqueProxies pairs to second halves, using =:= as equality */
   private def mapRef(ref: TermRef): Option[TermRef] =
     opaqueProxies.collectFirst {
       case (from, to) if from.symbol == ref.symbol && from =:= ref => to
@@ -479,6 +486,7 @@ class Inliner(val call: tpd.Tree)(using Context):
   /** Register type of leaf node */
   private def registerLeaf(tree: Tree): Unit = tree match
     case _: This | _: Ident | _: TypeTree => registerTypes.traverse(tree.typeOpt)
+    case tree: Quote => registerTypes.traverse(tree.bodyType)
     case _ =>
 
   /** Make `tree` part of inlined expansion. This means its owner has to be changed
@@ -541,7 +549,7 @@ class Inliner(val call: tpd.Tree)(using Context):
 
     val inlineTyper = new InlineTyper(ctx.reporter.errorCount)
 
-    val inlineCtx = inlineContext(call).fresh.setTyper(inlineTyper).setNewScope
+    val inlineCtx = inlineContext(Inlined(call, Nil, ref(defn.Predef_undefined))).fresh.setTyper(inlineTyper).setNewScope
 
     def inlinedFromOutside(tree: Tree)(span: Span): Tree =
       Inlined(EmptyTree, Nil, tree)(using ctx.withSource(inlinedMethod.topLevelClass.source)).withSpan(span)
@@ -588,7 +596,7 @@ class Inliner(val call: tpd.Tree)(using Context):
               val inlinedSingleton = singleton(t).withSpan(argSpan)
               inlinedFromOutside(inlinedSingleton)(tree.span)
             case Some(t) if tree.isType =>
-              inlinedFromOutside(TypeTree(t).withSpan(argSpan))(tree.span)
+              inlinedFromOutside(new InferredTypeTree().withType(t).withSpan(argSpan))(tree.span)
             case _ => tree
           }
         case tree @ Select(qual: This, name) if tree.symbol.is(Private) && tree.symbol.isInlineMethod =>
@@ -808,29 +816,30 @@ class Inliner(val call: tpd.Tree)(using Context):
       super.typedValDef(vdef1, sym)
 
     override def typedApply(tree: untpd.Apply, pt: Type)(using Context): Tree =
-      def cancelQuotes(tree: Tree): Tree =
-        tree match
-          case Quoted(Spliced(inner)) => inner
-          case _ => tree
       val locked = ctx.typerState.ownedVars
-      val res = cancelQuotes(constToLiteral(BetaReduce(super.typedApply(tree, pt)))) match {
-        case res: Apply if res.symbol == defn.QuotedRuntime_exprSplice
-                        && StagingLevel.level == 0
-                        && !hasInliningErrors =>
-          val expanded = expandMacro(res.args.head, tree.srcPos)
-          transform.TreeChecker.checkMacroGeneratedTree(res, expanded)
-          typedExpr(expanded) // Inline calls and constant fold code generated by the macro
-        case res =>
-          specializeEq(inlineIfNeeded(res, pt, locked))
-      }
-      res
+      specializeEq(inlineIfNeeded(constToLiteral(BetaReduce(super.typedApply(tree, pt))), pt, locked))
 
     override def typedTypeApply(tree: untpd.TypeApply, pt: Type)(using Context): Tree =
       val locked = ctx.typerState.ownedVars
       val tree1 = inlineIfNeeded(constToLiteral(BetaReduce(super.typedTypeApply(tree, pt))), pt, locked)
-      if tree1.symbol.isQuote then
+      if tree1.symbol == defn.QuotedTypeModule_of then
         ctx.compilationUnit.needsStaging = true
       tree1
+
+    override def typedQuote(tree: untpd.Quote, pt: Type)(using Context): Tree =
+      super.typedQuote(tree, pt) match
+        case Quote(Splice(inner), _) => inner
+        case tree1 =>
+          ctx.compilationUnit.needsStaging = true
+          tree1
+
+    override def typedSplice(tree: untpd.Splice, pt: Type)(using Context): Tree =
+      super.typedSplice(tree, pt) match
+        case tree1 @ Splice(expr) if level == 0 && !hasInliningErrors =>
+          val expanded = expandMacro(expr, tree1.srcPos)
+          transform.TreeChecker.checkMacroGeneratedTree(tree1, expanded)
+          typedExpr(expanded) // Inline calls and constant fold code generated by the macro
+        case tree1 => tree1
 
     override def typedMatch(tree: untpd.Match, pt: Type)(using Context): Tree =
       val tree1 =
@@ -868,8 +877,12 @@ class Inliner(val call: tpd.Tree)(using Context):
                 }
               case _ => rhs0
             }
-            val (usedBindings, rhs2) = dropUnusedDefs(caseBindings, rhs1)
-            val rhs = seq(usedBindings, rhs2)
+            val rhs2 = rhs1 match {
+              case Typed(expr, tpt) if rhs1.span.isSynthetic => constToLiteral(expr)
+              case _ => constToLiteral(rhs1)
+            }
+            val (usedBindings, rhs3) = dropUnusedDefs(caseBindings, rhs2)
+            val rhs = seq(usedBindings, rhs3)
             inlining.println(i"""--- reduce:
                                 |$tree
                                 |--- to:
@@ -963,29 +976,24 @@ class Inliner(val call: tpd.Tree)(using Context):
         bindingOfSym(binding.symbol) = binding
       }
 
-      val countRefs = new TreeTraverser {
-        override def traverse(t: Tree)(using Context) = {
-          def updateRefCount(sym: Symbol, inc: Int) =
-            for (x <- refCount.get(sym)) refCount(sym) = x + inc
-          def updateTermRefCounts(t: Tree) =
-            t.typeOpt.foreachPart {
-              case ref: TermRef => updateRefCount(ref.symbol, 2) // can't be inlined, so make sure refCount is at least 2
-              case _ =>
-            }
-
-          t match {
-            case t: RefTree =>
-              updateRefCount(t.symbol, 1)
-              updateTermRefCounts(t)
-            case _: New | _: TypeTree =>
-              updateTermRefCounts(t)
-            case _ =>
-          }
-          traverseChildren(t)
+      def updateRefCount(sym: Symbol, inc: Int) =
+        for (x <- refCount.get(sym)) refCount(sym) = x + inc
+      def updateTermRefCounts(tree: Tree) =
+        tree.typeOpt.foreachPart {
+          case ref: TermRef => updateRefCount(ref.symbol, 2) // can't be inlined, so make sure refCount is at least 2
+          case _ =>
         }
-      }
-      countRefs.traverse(tree)
-      for (binding <- bindings) countRefs.traverse(binding)
+      def countRefs(tree: Tree) =
+        tree.foreachSubTree {
+          case t: RefTree =>
+            updateRefCount(t.symbol, 1)
+            updateTermRefCounts(t)
+          case t @ (_: New | _: TypeTree) =>
+            updateTermRefCounts(t)
+          case _ =>
+        }
+      countRefs(tree)
+      for (binding <- bindings) countRefs(binding)
 
       def retain(boundSym: Symbol) = {
         refCount.get(boundSym) match {
@@ -1027,9 +1035,9 @@ class Inliner(val call: tpd.Tree)(using Context):
   }
 
   private def expandMacro(body: Tree, splicePos: SrcPos)(using Context) = {
-    assert(StagingLevel.level == 0)
+    assert(level == 0)
     val inlinedFrom = enclosingInlineds.last
-    val dependencies = macroDependencies(body)
+    val dependencies = macroDependencies(body)(using spliceContext)
     val suspendable = ctx.compilationUnit.isSuspendable
     if dependencies.nonEmpty && !ctx.reporter.errorsReported then
       for sym <- dependencies do
@@ -1043,13 +1051,13 @@ class Inliner(val call: tpd.Tree)(using Context):
     val evaluatedSplice = inContext(quoted.MacroExpansion.context(inlinedFrom)) {
       Splicer.splice(body, splicePos, inlinedFrom.srcPos, MacroClassLoader.fromContext)
     }
-    val inlinedNormailizer = new TreeMap {
+    val inlinedNormalizer = new TreeMap {
       override def transform(tree: tpd.Tree)(using Context): tpd.Tree = tree match {
-        case Inlined(EmptyTree, Nil, expr) if enclosingInlineds.isEmpty => transform(expr)
+        case tree @ Inlined(_, Nil, expr) if tree.inlinedFromOuterScope && enclosingInlineds.isEmpty => transform(expr)
         case _ => super.transform(tree)
       }
     }
-    val normalizedSplice = inlinedNormailizer.transform(evaluatedSplice)
+    val normalizedSplice = inlinedNormalizer.transform(evaluatedSplice)
     if (normalizedSplice.isEmpty) normalizedSplice
     else normalizedSplice.withSpan(splicePos.span)
   }
@@ -1059,28 +1067,14 @@ class Inliner(val call: tpd.Tree)(using Context):
    */
   private def macroDependencies(tree: Tree)(using Context) =
     new TreeAccumulator[List[Symbol]] {
-      private var level = -1
       override def apply(syms: List[Symbol], tree: tpd.Tree)(using Context): List[Symbol] =
-        if level != -1 then foldOver(syms, tree)
-        else tree match {
-          case tree: RefTree if tree.isTerm && tree.symbol.isDefinedInCurrentRun && !tree.symbol.isLocal =>
+        tree match {
+          case tree: RefTree if tree.isTerm && level == -1 && tree.symbol.isDefinedInCurrentRun && !tree.symbol.isLocal =>
             foldOver(tree.symbol :: syms, tree)
-          case Quoted(body) =>
-            level += 1
-            try apply(syms, body)
-            finally level -= 1
-          case Spliced(body) =>
-            level -= 1
-            try apply(syms, body)
-            finally level += 1
-          case SplicedType(body) =>
-            level -= 1
-            try apply(syms, body)
-            finally level += 1
-          case _: TypTree =>
-            syms
-          case _ =>
-            foldOver(syms, tree)
+          case _: This if level == -1 && tree.symbol.isDefinedInCurrentRun =>
+            tree.symbol :: syms
+          case _: TypTree => syms
+          case _ => foldOver(syms, tree)
         }
     }.apply(Nil, tree)
 end Inliner

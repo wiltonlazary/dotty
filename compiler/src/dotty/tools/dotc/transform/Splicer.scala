@@ -31,6 +31,7 @@ import dotty.tools.dotc.quoted.{PickledQuotes, QuoteUtils}
 
 import scala.quoted.Quotes
 import scala.quoted.runtime.impl._
+import dotty.tools.dotc.core.NameKinds
 
 /** Utility class to splice quoted expressions */
 object Splicer {
@@ -44,7 +45,7 @@ object Splicer {
    *  See: `Staging`
    */
   def splice(tree: Tree, splicePos: SrcPos, spliceExpansionPos: SrcPos, classLoader: ClassLoader)(using Context): Tree = tree match {
-    case Quoted(quotedTree) => quotedTree
+    case Quote(quotedTree, Nil) => quotedTree
     case _ =>
       val macroOwner = newSymbol(ctx.owner, nme.MACROkw, Macro | Synthetic, defn.AnyType, coord = tree.span)
       try
@@ -136,7 +137,7 @@ object Splicer {
     *  See: `Staging`
     */
   def checkValidMacroBody(tree: Tree)(using Context): Unit = tree match {
-    case Quoted(_) => // ok
+    case Quote(_, Nil) => // ok
     case _ =>
       type Env = Set[Symbol]
 
@@ -155,15 +156,15 @@ object Splicer {
         case Block(Nil, expr) => checkIfValidArgument(expr)
         case Typed(expr, _) => checkIfValidArgument(expr)
 
-        case Apply(Select(Apply(fn, quoted :: Nil), nme.apply), _) if fn.symbol == defn.QuotedRuntime_exprQuote =>
+        case Apply(Select(Quote(body, _), nme.apply), _) =>
           val noSpliceChecker = new TreeTraverser {
             def traverse(tree: Tree)(using Context): Unit = tree match
-              case Spliced(_) =>
+              case Splice(_) =>
                 report.error("Quoted argument of macros may not have splices", tree.srcPos)
               case _ =>
                 traverseChildren(tree)
           }
-          noSpliceChecker.traverse(quoted)
+          noSpliceChecker.traverse(body)
 
         case Apply(TypeApply(fn, List(quoted)), _)if fn.symbol == defn.QuotedTypeModule_of =>
           // OK
@@ -203,7 +204,7 @@ object Splicer {
         case Typed(expr, _) =>
           checkIfValidStaticCall(expr)
 
-        case Apply(Select(Apply(fn, quoted :: Nil), nme.apply), _) if fn.symbol == defn.QuotedRuntime_exprQuote =>
+        case Apply(Select(Quote(quoted, Nil), nme.apply), _) =>
           // OK, canceled and warning emitted
 
         case Call(fn, args)
@@ -214,6 +215,13 @@ object Splicer {
             report.error("Macro cannot be implemented with an `inline` method", fn.srcPos)
           args.flatten.foreach(checkIfValidArgument)
 
+        case Call(fn, args) if fn.symbol.name.is(NameKinds.InlineAccessorName) =>
+          // TODO suggest use of @binaryAPI once we have the annotation
+          report.error(
+            i"""Macro implementation is not statically accessible.
+              |
+              |Non-static inline accessor was generated in ${fn.symbol.owner}
+              |""".stripMargin, tree.srcPos)
         case _ =>
           report.error(
             """Malformed macro.
@@ -240,15 +248,15 @@ object Splicer {
 
     override protected  def interpretTree(tree: Tree)(implicit env: Env): Object = tree match {
       // Interpret level -1 quoted code `'{...}` (assumed without level 0 splices)
-      case Apply(Select(Apply(TypeApply(fn, _), quoted :: Nil), nme.apply), _) if fn.symbol == defn.QuotedRuntime_exprQuote =>
-        val quoted1 = quoted match {
-          case quoted: Ident if quoted.symbol.isAllOf(InlineByNameProxy) =>
+      case Apply(Select(Quote(body, _), nme.apply), _) =>
+        val body1 = body match {
+          case expr: Ident if expr.symbol.isAllOf(InlineByNameProxy) =>
             // inline proxy for by-name parameter
-            quoted.symbol.defTree.asInstanceOf[DefDef].rhs
-          case Inlined(EmptyTree, _, quoted) => quoted
-          case _ => quoted
+            expr.symbol.defTree.asInstanceOf[DefDef].rhs
+          case tree: Inlined if tree.inlinedFromOuterScope => tree.expansion
+          case _ => body
         }
-        new ExprImpl(Inlined(EmptyTree, Nil, QuoteUtils.changeOwnerOfTree(quoted1, ctx.owner)).withSpan(quoted1.span), SpliceScope.getCurrent)
+        new ExprImpl(Inlined(EmptyTree, Nil, QuoteUtils.changeOwnerOfTree(body1, ctx.owner)).withSpan(body1.span), SpliceScope.getCurrent)
 
       // Interpret level -1 `Type.of[T]`
       case Apply(TypeApply(fn, quoted :: Nil), _) if fn.symbol == defn.QuotedTypeModule_of =>

@@ -1,20 +1,7 @@
 package dotty.tools.scaladoc
 
-import java.util.ServiceLoader
-import java.io.File
-import java.util.jar._
-import scala.jdk.CollectionConverters._
-import collection.immutable.ArraySeq
-
-import java.nio.file.Files
-
 import dotty.tools.dotc.config.Settings._
 import dotty.tools.dotc.config.AllScalaSettings
-import dotty.tools.scaladoc.Scaladoc._
-import dotty.tools.dotc.config.Settings.Setting.value
-import dotty.tools.dotc.config.Properties._
-import dotty.tools.dotc.config.CliCommand
-import dotty.tools.dotc.core.Contexts._
 
 class ScaladocSettings extends SettingGroup with AllScalaSettings:
   val unsupportedSettings = Seq(
@@ -56,7 +43,7 @@ class ScaladocSettings extends SettingGroup with AllScalaSettings:
 
   val socialLinks: Setting[List[String]] =
     MultiStringSetting("-social-links", "social-links",
-      "Links to social sites. '[github|twitter|gitter|discord]::link' syntax is used.")
+      "Links to social sites. '[github|twitter|gitter|discord]::link' or 'custom::link::light_icon_file_name[::dark_icon_file_name]' syntax is used. For custom links, the icons must be present in '_assets/images/'")
 
   val deprecatedSkipPackages: Setting[List[String]] =
     MultiStringSetting("-skip-packages", "packages", "Deprecated, please use `-skip-by-id` or `-skip-by-regex`")
@@ -97,6 +84,12 @@ class ScaladocSettings extends SettingGroup with AllScalaSettings:
   val noLinkWarnings: Setting[Boolean] = BooleanSetting(
     "-no-link-warnings",
     "Avoid warnings for ambiguous and incorrect links in members look up. Doesn't affect warnings for incorrect links of assets etc.",
+    false
+  )
+
+  val noLinkAssetWarnings: Setting[Boolean] = BooleanSetting(
+    "-no-link-asset-warnings",
+    "Avoid warnings for incorrect links of assets like images, static pages, etc.",
     false
   )
 

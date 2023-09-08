@@ -31,6 +31,7 @@ import io.AbstractFile
 import util.{SourceFile, NoSource, Property, SourcePosition, SrcPos, EqHashMap}
 import scala.annotation.internal.sharable
 import config.Printers.typr
+import dotty.tools.dotc.classpath.FileUtils.isScalaBinary
 
 object Symbols {
 
@@ -40,7 +41,7 @@ object Symbols {
   val Ids: Property.Key[Array[String]] = new Property.Key
 
   /** A Symbol represents a Scala definition/declaration or a package.
-   *  @param coord  The coordinates of the symbol (a position or an index)
+   *  @param myCoord The coordinates of the symbol (a position or an index)
    *  @param id     A unique identifier of the symbol (unique per ContextBase)
    */
   class Symbol private[Symbols] (private var myCoord: Coord, val id: Int, val nestingLevel: Int)
@@ -77,13 +78,14 @@ object Symbols {
 
     /** Does this symbol retain its definition tree?
      *  A good policy for this needs to balance costs and benefits, where
-     *  costs are mainly memoty leaks, in particular across runs.
+     *  costs are mainly memory leaks, in particular across runs.
      */
     def retainsDefTree(using Context): Boolean =
       ctx.settings.YretainTrees.value ||
       denot.owner.isTerm ||                // no risk of leaking memory after a run for these
       denot.isOneOf(InlineOrProxy) ||      // need to keep inline info
-      ctx.settings.YcheckInit.value        // initialization check
+      ctx.settings.YcheckInit.value ||     // initialization check
+      ctx.settings.YcheckInitGlobal.value
 
     /** The last denotation of this symbol */
     private var lastDenot: SymDenotation = _
@@ -150,7 +152,7 @@ object Symbols {
       * symbols defined by the user in a prior run of the REPL, that are still valid.
       */
     final def isDefinedInSource(using Context): Boolean =
-      span.exists && isValidInCurrentRun && associatedFileMatches(_.extension != "class")
+      span.exists && isValidInCurrentRun && associatedFileMatches(!_.isScalaBinary)
 
     /** Is symbol valid in current run? */
     final def isValidInCurrentRun(using Context): Boolean =
@@ -170,7 +172,7 @@ object Symbols {
       asInstanceOf[TermSymbol]
     }
     final def asType(using Context): TypeSymbol = {
-      assert(isType, s"isType called on not-a-Type $this");
+      assert(isType, s"asType called on not-a-Type $this");
       asInstanceOf[TypeSymbol]
     }
 
@@ -271,7 +273,7 @@ object Symbols {
     /** The class file from which this class was generated, null if not applicable. */
     final def binaryFile(using Context): AbstractFile | Null = {
       val file = associatedFile
-      if (file != null && file.extension == "class") file else null
+      if file != null && file.isScalaBinary then file else null
     }
 
     /** A trap to avoid calling x.symbol on something that is already a symbol.
@@ -284,7 +286,7 @@ object Symbols {
 
     final def source(using Context): SourceFile = {
       def valid(src: SourceFile): SourceFile =
-        if (src.exists && src.file.extension != "class") src
+        if (src.exists && !src.file.isScalaBinary) src
         else NoSource
 
       if (!denot.exists) NoSource
@@ -462,7 +464,7 @@ object Symbols {
       if !mySource.exists && !denot.is(Package) then
         // this allows sources to be added in annotations after `sourceOfClass` is first called
         val file = associatedFile
-        if file != null && file.extension != "class" then
+        if file != null && !file.isScalaBinary then
           mySource = ctx.getSource(file)
         else
           mySource = defn.patchSource(this)

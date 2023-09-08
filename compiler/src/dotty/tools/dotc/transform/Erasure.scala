@@ -190,12 +190,14 @@ class Erasure extends Phase with DenotTransformer {
   def assertErased(tp: Type, tree: tpd.Tree = tpd.EmptyTree)(using Context): Unit = {
     def isAllowed(cls: Symbol, sourceName: String) =
       tp.typeSymbol == cls && ctx.compilationUnit.source.file.name == sourceName
-    assert(isErasedType(tp) ||
-           isAllowed(defn.ArrayClass, "Array.scala") ||
-           isAllowed(defn.TupleClass, "Tuple.scala") ||
-           isAllowed(defn.NonEmptyTupleClass, "Tuple.scala") ||
-           isAllowed(defn.PairClass, "Tuple.scala"),
-        i"The type $tp - ${tp.toString} of class ${tp.getClass} of tree $tree : ${tree.tpe} / ${tree.getClass} is illegal after erasure, phase = ${ctx.phase.prev}")
+    assert(
+      isErasedType(tp)
+      || isAllowed(defn.ArrayClass, "Array.scala")
+      || isAllowed(defn.TupleClass, "Tuple.scala")
+      || isAllowed(defn.NonEmptyTupleClass, "Tuple.scala")
+      || isAllowed(defn.PairClass, "Tuple.scala")
+      || isAllowed(defn.PureClass, "Pure.scala"),
+      i"The type $tp - ${tp.toString} of class ${tp.getClass} of tree $tree : ${tree.tpe} / ${tree.getClass} is illegal after erasure, phase = ${ctx.phase.prev}")
   }
 }
 
@@ -678,9 +680,7 @@ object Erasure {
           inContext(preErasureCtx) {
             val qualTp = tree.qualifier.typeOpt.widen
             if qualTp.derivesFrom(defn.PolyFunctionClass) then
-              erasePolyFunctionApply(qualTp.select(nme.apply).widen).classSymbol
-            else if defn.isErasedFunctionType(qualTp) then
-              eraseErasedFunctionApply(qualTp.select(nme.apply).widen.asInstanceOf[MethodType]).classSymbol
+              eraseRefinedFunctionApply(qualTp.select(nme.apply).widen).classSymbol
             else
               NoSymbol
           }
@@ -762,7 +762,9 @@ object Erasure {
         val symIsPrimitive = sym.owner.isPrimitiveValueClass
 
         def originalQual: Type =
-          erasure(tree.qualifier.typeOpt.widen.finalResultType)
+          erasure(
+            inContext(preErasureCtx):
+              tree.qualifier.typeOpt.widen.finalResultType)
 
         if (qualIsPrimitive && !symIsPrimitive || qual.tpe.widenDealias.isErasedValueType)
           recur(box(qual))
@@ -867,7 +869,7 @@ object Erasure {
 
           app(fun1)
         case t =>
-          if ownArgs.isEmpty then fun1
+          if ownArgs.isEmpty || t.isError then fun1
           else throw new MatchError(i"tree $tree has unexpected type of function $fun/$fun1: $t, was $origFunType, args = $ownArgs")
     end typedApply
 

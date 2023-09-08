@@ -6,6 +6,7 @@ import core.*
 import Types.*, Symbols.*, Contexts.*, Annotations.*, Flags.*
 import ast.{tpd, untpd}
 import Decorators.*, NameOps.*
+import config.SourceVersion
 import config.Printers.capt
 import util.Property.Key
 import tpd.*
@@ -14,10 +15,19 @@ import config.Feature
 private val Captures: Key[CaptureSet] = Key()
 private val BoxedType: Key[BoxedTypeCache] = Key()
 
+/** Switch whether unpickled function types and byname types should be mapped to
+ *  impure types. With the new gradual typing using Fluid capture sets, this should
+ *  be no longer needed. Also, it has bad interactions with pickling tests.
+ */
+private val adaptUnpickledFunctionTypes = false
+
 /** The arguments of a @retains or @retainsByName annotation */
 private[cc] def retainedElems(tree: Tree)(using Context): List[Tree] = tree match
   case Apply(_, Typed(SeqLiteral(elems, _), _) :: Nil) => elems
   case _ => Nil
+
+def allowUniversalInBoxed(using Context) =
+  Feature.sourceVersion.isAtLeast(SourceVersion.`3.3`)
 
 /** An exception thrown if a @retains argument is not syntactically a CaptureRef */
 class IllegalCaptureRef(tpe: Type) extends Exception
@@ -45,7 +55,7 @@ extension (tree: Tree)
    *  a by name parameter type, turning the latter into an impure by name parameter type.
    */
   def adaptByNameArgUnderPureFuns(using Context): Tree =
-    if Feature.pureFunsEnabledSomewhere then
+    if adaptUnpickledFunctionTypes && Feature.pureFunsEnabledSomewhere then
       val rbn = defn.RetainsByNameAnnot
       Annotated(tree,
         New(rbn.typeRef).select(rbn.primaryConstructor).appliedTo(
@@ -141,7 +151,7 @@ extension (tp: Type)
    */
   def adaptFunctionTypeUnderPureFuns(using Context): Type = tp match
     case AppliedType(fn, args)
-    if Feature.pureFunsEnabledSomewhere && defn.isFunctionClass(fn.typeSymbol) =>
+    if adaptUnpickledFunctionTypes && Feature.pureFunsEnabledSomewhere && defn.isFunctionClass(fn.typeSymbol) =>
       val fname = fn.typeSymbol.name
       defn.FunctionType(
         fname.functionArity,

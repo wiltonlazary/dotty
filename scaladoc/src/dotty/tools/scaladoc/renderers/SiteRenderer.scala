@@ -3,8 +3,7 @@ package renderers
 
 import util.HTML._
 import scala.jdk.CollectionConverters._
-import java.net.URI
-import java.net.URL
+import java.net.{URI, URL}
 import dotty.tools.scaladoc.site._
 import scala.util.Try
 import org.jsoup.Jsoup
@@ -30,27 +29,41 @@ trait SiteRenderer(using DocContext) extends Locations:
 
   def siteContent(pageDri: DRI, content: ResolvedTemplate): PageContent =
     import content.ctx
-    def tryAsDri(str: String): Option[String] =
+
+    def tryAsDriPlain(str: String): Option[String] =
       val (path, prefix) = str match
         case HashRegex(path, prefix) => (path, prefix)
         case _ => (str, "")
+      val res = ctx.driForLink(content.template.file, path).filter(driExists)
+      res.headOption.map(pathToPage(pageDri, _) + prefix)
+
+    def tryAsDri(str: String): Option[String] =
+      val newStr =
+        str.dropWhile(c => c == '.' || c == '/').replaceAll("/", ".") match
+          case str if str.endsWith("$.html") => str.stripSuffix("$.html")
+          case str if str.endsWith(".html") => str.stripSuffix(".html")
+          case _ => str
+
+      val (path, prefix) = newStr match
+        case HashRegex(path, prefix) => (path, prefix)
+        case _ => (newStr, "")
 
       val res = ctx.driForLink(content.template.file, path).filter(driExists)
       res.headOption.map(pathToPage(pageDri, _) + prefix)
 
     def processLocalLink(str: String): String =
       val staticSiteRootPath = content.ctx.root.toPath.toAbsolutePath
-      def asValidURL: Option[String] = Try(URL(str)).toOption.map(_ => str)
+      def asValidURL: Option[String] = Try(URI(str).toURL).toOption.map(_ => str)
       def asAsset: Option[String] = Option.when(
         Files.exists(staticSiteRootPath.resolve("_assets").resolve(str.stripPrefix("/")))
       )(
         resolveLink(pageDri, str.stripPrefix("/"))
       )
-      def asStaticSite: Option[String] = tryAsDri(str)
+      def asStaticSite: Option[String] = tryAsDriPlain(str).orElse(tryAsDri(str))
 
       /* Link resolving checks performs multiple strategies with following priority:
         1. We check if the link is a valid URL e.g. http://dotty.epfl.ch
-        2. We check if the link leads to other static site
+        2. We check if the link leads to other static site or API pages, example: [[exemple.scala.Foo]] || [Foo](../exemple/scala/Foo.html)
         3. We check if the link leads to existing asset e.g. images/logo.svg -> <static-site-root>/_assets/images/logo.svg
       */
 
@@ -58,7 +71,10 @@ trait SiteRenderer(using DocContext) extends Locations:
         .orElse(asStaticSite)
         .orElse(asAsset)
         .getOrElse {
-          report.warn(s"Unable to resolve link '$str'", content.template.templateFile.file)
+          if (!summon[DocContext].args.noLinkAssetWarnings){
+            val msg = s"Unable to resolve link '$str'"
+            report.warn(msg, content.template.templateFile.file)
+          }
           str
         }
 

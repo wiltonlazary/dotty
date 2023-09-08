@@ -315,7 +315,7 @@ object Flags {
   val (SuperParamAliasOrScala2x @ _, SuperParamAlias @ _, Scala2x @ _) = newFlags(26, "<super-param-alias>", "<scala-2.x>")
 
   /** A parameter with a default value / an impure untpd.FunctionWithMods type */
-  val (_, HasDefault @ _, Impure @ _) = newFlags(27, "<hasdefault>", "<{*}>")
+  val (_, HasDefault @ _, Impure @ _) = newFlags(27, "<hasdefault>", "<impure>")
 
   /** An extension method, or a collective extension instance */
   val (Extension @ _, ExtensionMethod @ _, _) = newFlags(28, "<extension>")
@@ -404,10 +404,10 @@ object Flags {
   /** Children were queried on this class */
   val (_, _, ChildrenQueried @ _) = newFlags(56, "<children-queried>")
 
-  /** A module variable (Scala 2.x only)
+  /** A module variable (Scala 2.x only) / a capture-checked class
    *  (re-used as a flag for private parameter accessors in Recheck)
    */
-  val (_, Scala2ModuleVar @ _, _) = newFlags(57, "<modulevar>")
+  val (_, Scala2ModuleVar @ _, CaptureChecked @ _) = newFlags(57, "<modulevar>/<cc>")
 
   /** A macro */
   val (Macro @ _, _, _) = newFlags(58, "<macro>")
@@ -604,6 +604,7 @@ object Flags {
   val Scala2Trait: FlagSet                   = Scala2x | Trait
   val SyntheticArtifact: FlagSet             = Synthetic | Artifact
   val SyntheticCase: FlagSet                 = Synthetic | Case
+  val SyntheticMethod: FlagSet               = Synthetic | Method
   val SyntheticModule: FlagSet               = Synthetic | Module
   val SyntheticOpaque: FlagSet               = Synthetic | Opaque
   val SyntheticParam: FlagSet                = Synthetic | Param

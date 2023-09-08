@@ -113,10 +113,10 @@ Taking XML as an example
 implicit class XMLinterpolation(s: StringContext) = {
     object xml {
         def apply(exprs: Any*) =
-            // parse ‘s’ and build an XML tree with ‘exprs’ 
+            // parse ‘s’ and build an XML tree with ‘exprs’
             //in the holes
         def unapplySeq(xml: Node): Option[Seq[Node]] =
-          // match `s’ against `xml’ tree and produce 
+          // match `s’ against `xml’ tree and produce
           //subtrees in holes
     }
 }
@@ -185,7 +185,12 @@ This is further discussed [here](#pattern-sequences).
   SimplePattern   ::=  ‘(’ [Patterns] ‘)’
 ```
 
-A _tuple pattern_ `(´p_1´, ..., ´p_n´)` is an alias for the constructor pattern `scala.Tuple´n´(´p_1´, ..., ´p_n´)`, where ´n \geq 2´. The empty tuple `()` is the unique value of type `scala.Unit`.
+A _tuple pattern_ `(´p_1´, ..., ´p_n´)` where ´n \geq 2´ is equivalent to `´p_1´ *: ... *: ´p_n´ *: scala.EmptyTuple`.
+
+Notes:
+- `()` is equivalent to `_: scala.Unit`, and not `scala.EmptyTuple`.
+- `(´pat´)` is a pattern matching ´pat´, and not `´pat´ *: scala.EmptyTuple`.
+- As such patterns with `*:` are slow, a more efficient translation is free to be implemented. For example, `(´p_1´, ´p_2´)` could be translated to `scala.Tuple2(´p_1´, ´p_2´)`, which is indeed equivalent to `´p_1´ *: ´p_2´ *: scala.EmptyTuple`.
 
 ### Extractor Patterns
 
@@ -271,7 +276,7 @@ SimplePattern ::= StableId ‘(’ [Patterns ‘,’] [varid ‘@’] ‘_’ �
 ```
 
 A _pattern sequence_ ´p_1, ..., p_n´ appears in two contexts.
-First, in a constructor pattern ´c(q_1, ..., q_m, p_1, ..., p_n)´, where ´c´ is a case class which has ´m+1´ primary constructor parameters,  ending in a [repeated parameter](04-basic-declarations-and-definitions.html#repeated-parameters) of type `S*`.
+First, in a constructor pattern ´c(q_1, ..., q_m, p_1, ..., p_n)´, where ´c´ is a case class which has ´m+1´ primary constructor parameters,  ending in a [repeated parameter](04-basic-definitions.html#repeated-parameters) of type `S*`.
 Second, in an extractor pattern ´x(q_1, ..., q_m, p_1, ..., p_n)´ if the extractor object ´x´ does not have an `unapply` method, but it does define an `unapplySeq` method with a result type that is an extractor type for type `(T_1, ... , T_m, Seq[S])` (if `m = 0`, an extractor type for the type `Seq[S]` is also accepted). The expected type for the patterns ´p_i´ is ´S´.
 
 The last pattern in a pattern sequence may be a _sequence wildcard_ `_*`.
@@ -479,9 +484,12 @@ Therefore, the right hand side of the case clause, `y.n`, of type `Int`, is foun
 ## Pattern Matching Expressions
 
 ```ebnf
+  InfixExpr       ::=  InfixExpr MatchClause
+  SimpleExpr      ::=  SimpleExpr ‘.’ MatchClause
   Expr            ::=  PostfixExpr ‘match’ ‘{’ CaseClauses ‘}’
   CaseClauses     ::=  CaseClause {CaseClause}
   CaseClause      ::=  ‘case’ Pattern [Guard] ‘=>’ Block
+  ExprCaseClause  ::=  ‘case’ Pattern [Guard] ‘=>’ Expr
 ```
 
 A _pattern matching expression_
@@ -495,7 +503,7 @@ Each case consists of a (possibly guarded) pattern ´p_i´ and a block ´b_i´.
 Each ´p_i´ might be complemented by a guard `if ´e´` where ´e´ is a boolean expression.
 The scope of the pattern variables in ´p_i´ comprises the pattern's guard and the corresponding block ´b_i´.
 
-Let ´T´ be the type of the selector expression ´e´ and let ´a_1, ..., a_m´ be the type parameters of all methods enclosing the pattern matching expression.  
+Let ´T´ be the type of the selector expression ´e´ and let ´a_1, ..., a_m´ be the type parameters of all methods enclosing the pattern matching expression.
 For every ´a_i´, let ´L_i´ be its lower bound and ´U_i´ be its higher bound.
 Every pattern ´p \in \{p_1,, ..., p_n\}´ can be typed in two ways.
 First, it is attempted to type ´p´ with ´T´ as its expected type.
@@ -513,7 +521,8 @@ If no such bounds can be found, a compile time error results.
 If such bounds are found, the pattern matching clause starting with ´p´ is then typed under the assumption that each ´a_i´ has lower bound ´L_i'´ instead of ´L_i´ and has upper bound ´U_i'´ instead of ´U_i´.
 
 The expected type of every block ´b_i´ is the expected type of the whole pattern matching expression.
-The type of the pattern matching expression is then the [weak least upper bound](03-types.html#weak-conformance) of the types of all blocks ´b_i´.
+If there is no expected type, [harmonization](./03-types.html#harmonization) is attempted on the list of all blocks ´b_i´.
+The type of the pattern matching expression is then the [least upper bound](03-types.html#least-upper-bounds-and-greatest-lower-bounds) of the types of all blocks ´b_i´ after harmonization.
 
 When applying a pattern matching expression to a selector value, patterns are tried in sequence until one is found which matches the [selector value](#patterns).
 Say this case is `case ´p_i \Rightarrow b_i´`.
@@ -529,7 +538,7 @@ In the interest of efficiency the evaluation of a pattern matching expression ma
 This might affect evaluation through side effects in guards.
 However, it is guaranteed that a guard expression is evaluated only if the pattern it guards matches.
 
-If the selector of a pattern match is an instance of a [`sealed` class](05-classes-and-objects.html#modifiers), the compilation of pattern matching can emit warnings which diagnose that a given set of patterns is not exhaustive, i.e. that there is a possibility of a `MatchError` being raised at run-time.
+If the selector of a pattern match is an instance of a [`sealed` class](05-classes-and-objects.html#modifiers), a [union type](03-types#union-and-intersection-types), or a combination thereof, the compilation of pattern matching can emit warnings which diagnose that a given set of patterns is not exhaustive, i.e. that there is a possibility of a `MatchError` being raised at run-time.
 
 ###### Example
 
@@ -561,7 +570,7 @@ def eval[T](t: Term[T]): T = t match {
 
 Note that the evaluator makes crucial use of the fact that type parameters of enclosing methods can acquire new bounds through pattern matching.
 
-For instance, the type of the pattern in the second case, `Succ(u)`, is `Int`. 
+For instance, the type of the pattern in the second case, `Succ(u)`, is `Int`.
 It conforms to the selector type `T` only if we assume an upper and lower bound of `Int` for `T`.
 Under the assumption `Int <: T <: Int` we can also verify that the type right hand side of the second case, `Int` conforms to its expected type, `T`.
 
@@ -590,7 +599,7 @@ If the expected type is [SAM-convertible](06-expressions.html#sam-conversion) to
 ```
 
 Here, each ´x_i´ is a fresh name.
-As was shown [here](06-expressions.html#anonymous-functions), this anonymous function is in turn equivalent to the following instance creation expression, where ´T´ is the weak least upper bound of the types of all ´b_i´.
+As was shown [here](06-expressions.html#anonymous-functions), this anonymous function is in turn equivalent to the following instance creation expression, where ´T´ is the least upper bound of the types of all ´b_i´.
 
 ```scala
 new scala.Function´k´[´S_1, ..., S_k´, ´T´] {
@@ -614,7 +623,7 @@ new scala.PartialFunction[´S´, ´T´] {
 }
 ```
 
-Here, ´x´ is a fresh name and ´T´ is the weak least upper bound of the types of all ´b_i´.
+Here, ´x´ is a fresh name and ´T´ is the least upper bound of the types of all ´b_i´.
 The final default case in the `isDefinedAt` method is omitted if one of the patterns ´p_1, ..., p_n´ is already a variable or wildcard pattern.
 
 ###### Example

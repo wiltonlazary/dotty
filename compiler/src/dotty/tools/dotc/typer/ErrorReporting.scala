@@ -55,7 +55,7 @@ object ErrorReporting {
     val meth = err.exprStr(methPart(tree))
     val info = if tree.symbol.exists then tree.symbol.info else mt
     if isCallableWithSingleEmptyArgumentList(info) then
-      report.error(MissingEmptyArgumentList(meth), tree.srcPos)
+      report.error(MissingEmptyArgumentList(meth, tree), tree.srcPos)
     else
       report.error(MissingArgumentList(meth, tree.symbol), tree.srcPos)
 
@@ -167,7 +167,7 @@ object ErrorReporting {
       val normPt = normalize(pt, pt)
 
       def contextFunctionCount(tp: Type): Int = tp.stripped match
-        case defn.ContextFunctionType(_, restp, _) => 1 + contextFunctionCount(restp)
+        case defn.ContextFunctionType(_, restp) => 1 + contextFunctionCount(restp)
         case _ => 0
       def strippedTpCount = contextFunctionCount(tree.tpe) - contextFunctionCount(normTp)
       def strippedPtCount = contextFunctionCount(pt) - contextFunctionCount(normPt)

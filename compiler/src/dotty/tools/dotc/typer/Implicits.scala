@@ -13,7 +13,7 @@ import Contexts._
 import Types._
 import Flags._
 import Mode.ImplicitsEnabled
-import NameKinds.{LazyImplicitName, EvidenceParamName}
+import NameKinds.{LazyImplicitName, ContextBoundParamName}
 import Symbols._
 import Types._
 import Decorators._
@@ -23,6 +23,7 @@ import ProtoTypes._
 import ErrorReporting._
 import Inferencing.{fullyDefinedType, isFullyDefined}
 import Scopes.newScope
+import Typer.BindingPrec, BindingPrec.*
 import transform.TypeUtils._
 import Hashable._
 import util.{EqHashMap, Stats}
@@ -49,17 +50,19 @@ object Implicits:
   }
 
   /** Both search candidates and successes are references with a specific nesting level. */
-  sealed trait RefAndLevel {
+  sealed trait RefAndLevel extends Showable {
     def ref: TermRef
     def level: Int
   }
 
   /** An eligible implicit candidate, consisting of an implicit reference and a nesting level */
-  case class Candidate(implicitRef: ImplicitRef, kind: Candidate.Kind, level: Int) extends RefAndLevel {
+  case class Candidate(implicitRef: ImplicitRef, kind: Candidate.Kind, level: Int) extends RefAndLevel with Showable {
     def ref: TermRef = implicitRef.underlyingRef
 
     def isExtension = (kind & Candidate.Extension) != 0
     def isConversion = (kind & Candidate.Conversion) != 0
+
+    def toText(printer: Printer): Text = printer.toText(this)
   }
   object Candidate {
     type Kind = Int
@@ -220,7 +223,7 @@ object Implicits:
             case pt: ViewProto =>
               viewCandidateKind(ref.widen, pt.argType, pt.resType)
             case _: ValueTypeOrProto =>
-              if (defn.isFunctionType(pt)) Candidate.Value
+              if (defn.isFunctionNType(pt)) Candidate.Value
               else valueTypeCandidateKind(ref.widen)
             case _ =>
               Candidate.Value
@@ -299,7 +302,7 @@ object Implicits:
   class ContextualImplicits(
       val refs: List[ImplicitRef],
       val outerImplicits: ContextualImplicits | Null,
-      isImport: Boolean)(initctx: Context) extends ImplicitRefs(initctx) {
+      val isImport: Boolean)(initctx: Context) extends ImplicitRefs(initctx) {
     private val eligibleCache = EqHashMap[Type, List[Candidate]]()
 
     /** The level increases if current context has a different owner or scope than
@@ -326,12 +329,28 @@ object Implicits:
       (this eq finalImplicits) || (outerImplicits eqn finalImplicits)
     }
 
+    def bindingPrec: BindingPrec =
+      if isImport then if ctx.importInfo.uncheckedNN.isWildcardImport then WildImport else NamedImport else Definition
+
     private def combineEligibles(ownEligible: List[Candidate], outerEligible: List[Candidate]): List[Candidate] =
       if ownEligible.isEmpty then outerEligible
       else if outerEligible.isEmpty then ownEligible
       else
-        val shadowed = ownEligible.map(_.ref.implicitName).toSet
-        ownEligible ::: outerEligible.filterConserve(cand => !shadowed.contains(cand.ref.implicitName))
+        val ownNames = mutable.Set(ownEligible.map(_.ref.implicitName)*)
+        val outer = outerImplicits.uncheckedNN
+        if !migrateTo3(using irefCtx) && level == outer.level && outer.bindingPrec.beats(bindingPrec) then
+          val keptOuters = outerEligible.filterConserve: cand =>
+            if ownNames.contains(cand.ref.implicitName) then
+              val keepOuter = cand.level == level
+              if keepOuter then ownNames -= cand.ref.implicitName
+              keepOuter
+            else true
+          val keptOwn = ownEligible.filterConserve: cand =>
+            ownNames.contains(cand.ref.implicitName)
+          keptOwn ::: keptOuters
+        else
+          ownEligible ::: outerEligible.filterConserve: cand =>
+            !ownNames.contains(cand.ref.implicitName)
 
     def uncachedEligible(tp: Type)(using Context): List[Candidate] =
       Stats.record("uncached eligible")
@@ -604,7 +623,7 @@ trait ImplicitRunInfo:
       private var parts: mutable.LinkedHashSet[Type] = _
       private val partSeen = util.HashSet[Type]()
 
-      def traverse(t: Type) =
+      def traverse(t: Type) = try
         if partSeen.contains(t) then ()
         else if implicitScopeCache.contains(t) then parts += t
         else
@@ -634,8 +653,16 @@ trait ImplicitRunInfo:
             case t: TypeLambda =>
               for p <- t.paramRefs do partSeen += p
               traverseChildren(t)
+            case t: MatchType =>
+              traverseChildren(t)
+              traverse(t.normalized)
+            case MatchType.InDisguise(mt)
+                if !t.isInstanceOf[LazyRef] // skip recursive applications (eg. Tuple.Map)
+            =>
+              traverse(mt)
             case t =>
               traverseChildren(t)
+      catch case ex: Throwable => handleRecursive("collectParts of", t.show, ex)
 
       def apply(tp: Type): collection.Set[Type] =
         parts = mutable.LinkedHashSet()
@@ -966,13 +993,13 @@ trait Implicits:
   /** A string indicating the formal parameter corresponding to a  missing argument */
   def implicitParamString(paramName: TermName, methodStr: String, tree: Tree)(using Context): String =
     tree match {
-      case Select(qual, nme.apply) if defn.isFunctionType(qual.tpe.widen) =>
+      case Select(qual, nme.apply) if defn.isFunctionNType(qual.tpe.widen) =>
         val qt = qual.tpe.widen
         val qt1 = qt.dealiasKeepAnnots
         def addendum = if (qt1 eq qt) "" else (i"\nWhere $qt is an alias of: $qt1")
         i"parameter of ${qual.tpe.widen}$addendum"
       case _ =>
-        i"${ if paramName.is(EvidenceParamName) then "an implicit parameter"
+        i"${ if paramName.is(ContextBoundParamName) then "a context parameter"
              else s"parameter $paramName" } of $methodStr"
     }
 
@@ -1591,7 +1618,6 @@ trait Implicits:
     * implicit search.
     *
     * @param cand The candidate implicit to be explored.
-    * @param pt   The target type for the above candidate.
     * @result     True if this candidate/pt are divergent, false otherwise.
     */
     def checkDivergence(cand: Candidate): Boolean =

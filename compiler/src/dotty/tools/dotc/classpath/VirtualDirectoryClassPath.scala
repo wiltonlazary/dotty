@@ -2,12 +2,10 @@ package dotty.tools.dotc.classpath
 
 import scala.language.unsafeNulls
 
-import dotty.tools.io.ClassRepresentation
+import dotty.tools.io.{ClassPath, ClassRepresentation}
 import dotty.tools.io.{AbstractFile, VirtualDirectory}
 import FileUtils._
-import java.net.URL
-
-import dotty.tools.io.ClassPath
+import java.net.{URI, URL}
 
 case class VirtualDirectoryClassPath(dir: VirtualDirectory) extends ClassPath with DirectoryLookup[ClassFileEntryImpl] with NoSourcePaths {
   type F = AbstractFile
@@ -37,18 +35,23 @@ case class VirtualDirectoryClassPath(dir: VirtualDirectory) extends ClassPath wi
   def isPackage(f: AbstractFile): Boolean = f.isPackage
 
   // mimic the behavior of the old nsc.util.DirectoryClassPath
-  def asURLs: Seq[URL] = Seq(new URL(dir.name))
+  def asURLs: Seq[URL] = Seq(new URI(dir.name).toURL)
   def asClassPathStrings: Seq[String] = Seq(dir.path)
 
   override def findClass(className: String): Option[ClassRepresentation] = findClassFile(className) map ClassFileEntryImpl.apply
 
   def findClassFile(className: String): Option[AbstractFile] = {
-    val relativePath = FileUtils.dirPath(className) + ".class"
-    Option(lookupPath(dir)(relativePath.split(java.io.File.separator).toIndexedSeq, directory = false))
+    val pathSeq = FileUtils.dirPath(className).split(java.io.File.separator)
+    val parentDir = lookupPath(dir)(pathSeq.init.toSeq, directory = true)
+    if parentDir == null then return None
+    else
+      Option(lookupPath(parentDir)(pathSeq.last + ".tasty" :: Nil, directory = false))
+        .orElse(Option(lookupPath(parentDir)(pathSeq.last + ".class" :: Nil, directory = false)))
   }
 
   private[dotty] def classes(inPackage: PackageName): Seq[ClassFileEntry] = files(inPackage)
 
   protected def createFileEntry(file: AbstractFile): ClassFileEntryImpl = ClassFileEntryImpl(file)
-  protected def isMatchingFile(f: AbstractFile): Boolean = f.isClass
+  protected def isMatchingFile(f: AbstractFile): Boolean =
+    f.isTasty || (f.isClass && f.classToTasty.isEmpty)
 }

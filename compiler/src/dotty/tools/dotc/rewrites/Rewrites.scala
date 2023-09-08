@@ -7,9 +7,11 @@ import core.Contexts._
 import collection.mutable
 import scala.annotation.tailrec
 import dotty.tools.dotc.reporting.Reporter
+import dotty.tools.dotc.util.SourcePosition;
 
 import java.io.OutputStreamWriter
 import java.nio.charset.StandardCharsets.UTF_8
+import dotty.tools.dotc.reporting.CodeAction
 
 /** Handles rewriting of Scala2 files to Dotty */
 object Rewrites {
@@ -19,14 +21,21 @@ object Rewrites {
     def delta = replacement.length - (span.end - span.start)
   }
 
+  /** A special type of Patch that instead of just a span, contains the
+    * full SourcePosition. This is useful when being used by
+    * [[dotty.tools.dotc.reporting.CodeAction]] or if the patch doesn't
+    * belong to the same file that the actual issue it's addressing is in.
+    *
+    * @param srcPos The SourcePosition of the patch.
+    * @param replacement The Replacement that should go in that position.
+    */
+  case class ActionPatch(srcPos: SourcePosition, replacement: String)
+
   private class Patches(source: SourceFile) {
     private[Rewrites] val pbuf = new mutable.ListBuffer[Patch]()
 
     def addPatch(span: Span, replacement: String): Unit =
-      pbuf.indexWhere(p => p.span.start == span.start && p.span.end == span.end) match {
-        case i if i >= 0 => pbuf.update(i, Patch(span, replacement))
-        case _           => pbuf += Patch(span, replacement)
-      }
+      pbuf += Patch(span, replacement)
 
     def apply(cs: Array[Char]): Array[Char] = {
       val delta = pbuf.map(_.delta).sum
@@ -91,6 +100,14 @@ object Rewrites {
       report.echo(s"[patched file ${source.file.path}]")
       rewrites.patched(source).writeBack()
     }
+
+  /** Given a CodeAction take the patches and apply them.
+   *
+   * @param action The CodeAction containing the patches
+   */
+  def applyAction(action: CodeAction)(using Context): Unit =
+    action.patches.foreach: actionPatch =>
+      patch(actionPatch.srcPos.span, actionPatch.replacement)
 }
 
 /** A completely encapsulated class representing rewrite state, used

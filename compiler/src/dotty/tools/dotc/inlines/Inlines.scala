@@ -4,7 +4,7 @@ package inlines
 
 import ast.*, core.*
 import Flags.*, Symbols.*, Types.*, Decorators.*, Constants.*, Contexts.*
-import StdNames.tpnme
+import StdNames.{tpnme, nme}
 import transform.SymUtils._
 import typer.*
 import NameKinds.BodyRetainerName
@@ -17,7 +17,7 @@ import transform.{PostTyper, Inlining, CrossVersionChecks}
 import staging.StagingLevel
 
 import collection.mutable
-import reporting.trace
+import reporting.{NotConstant, trace}
 import util.Spans.Span
 
 /** Support for querying inlineable methods and for inlining calls to such methods */
@@ -101,7 +101,7 @@ object Inlines:
       override def transform(t: Tree)(using Context) =
         if call.span.exists then
           t match
-            case Inlined(t, Nil, expr) if t.isEmpty => expr
+            case t @ Inlined(_, Nil, expr) if t.inlinedFromOuterScope => expr
             case _ if t.isEmpty => t
             case _ => super.transform(t.withSpan(call.span))
         else t
@@ -117,7 +117,7 @@ object Inlines:
       case Block(stats, expr) =>
         bindings ++= stats.map(liftPos)
         liftBindings(expr, liftPos)
-      case Inlined(call, stats, expr) =>
+      case tree @ Inlined(call, stats, expr) =>
         bindings ++= stats.map(liftPos)
         val lifter = liftFromInlined(call)
         cpy.Inlined(tree)(call, Nil, liftBindings(expr, liftFromInlined(call).transform(_)))
@@ -189,28 +189,33 @@ object Inlines:
     // transforms the patterns into terms, the `inlinePatterns` phase removes this anonymous class by β-reducing
     // the call to the `unapply`.
 
-    val UnApply(fun, trailingImplicits, patterns) = unapp
-
-    val sym = unapp.symbol
-
-    var unapplySym1: Symbol = NoSymbol // created from within AnonClass() and used afterwards
+    val fun = unapp.fun
+    val sym = fun.symbol
 
     val newUnapply = AnonClass(ctx.owner, List(defn.ObjectType), sym.coord) { cls =>
       // `fun` is a partially applied method that contains all type applications of the method.
       // The methodic type `fun.tpe.widen` is the type of the function starting from the scrutinee argument
       // and its type parameters are instantiated.
-      val unapplySym = newSymbol(cls, sym.name.toTermName, Synthetic | Method, fun.tpe.widen, coord = sym.coord).entered
-      val unapply = DefDef(unapplySym.asTerm, argss =>
-        val body = fun.appliedToArgss(argss).withSpan(unapp.span)
-        if body.symbol.is(Transparent) then inlineCall(body)(using ctx.withOwner(unapplySym))
-        else body
-      )
-      unapplySym1 = unapplySym
-      List(unapply)
+      val unapplyInfo = fun.tpe.widen
+      val unapplySym = newSymbol(cls, sym.name.toTermName, Synthetic | Method, unapplyInfo, coord = sym.coord).entered
+
+      val unapply = DefDef(unapplySym.asTerm, argss => fun.appliedToArgss(argss).withSpan(unapp.span))
+
+      if sym.is(Transparent) then
+        // Inline the body and refine the type of the unapply method
+        val inlinedBody = inlineCall(unapply.rhs)(using ctx.withOwner(unapplySym))
+        val refinedResultType = inlinedBody.tpe.widen
+        def refinedResult(info: Type): Type = info match
+          case info: LambdaType => info.newLikeThis(info.paramNames, info.paramInfos, refinedResult(info.resultType))
+          case _ => refinedResultType
+        unapplySym.info = refinedResult(unapplyInfo)
+        List(cpy.DefDef(unapply)(tpt = TypeTree(refinedResultType), rhs = inlinedBody))
+      else
+        List(unapply)
     }
 
-    val newFun = newUnapply.select(unapplySym1).withSpan(unapp.span)
-    cpy.UnApply(unapp)(newFun, trailingImplicits, patterns)
+    val newFun = newUnapply.select(sym.name).withSpan(unapp.span)
+    cpy.UnApply(unapp)(fun = newFun)
   end inlinedUnapply
 
   /** For a retained inline method, another method that keeps track of
@@ -413,7 +418,7 @@ object Inlines:
         if (inlinedMethod == defn.Compiletime_constValue) {
           val constVal = tryConstValue
           if constVal.isEmpty then
-            val msg = em"not a constant type: ${callTypeArgs.head}; cannot take constValue"
+            val msg = NotConstant("cannot take constValue", callTypeArgs.head.tpe)
             return ref(defn.Predef_undefined).withSpan(call.span).withType(ErrorType(msg))
           else
             return constVal

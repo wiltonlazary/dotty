@@ -1,20 +1,15 @@
 package dotty.tools.scaladoc
 
-import java.util.ServiceLoader
 import java.io.File
 import java.io.FileWriter
-import java.util.jar._
-import scala.jdk.CollectionConverters._
-import collection.immutable.ArraySeq
+import java.nio.file.Paths
 
-import java.nio.file.{ Files, Paths }
+import collection.immutable.ArraySeq
 
 import dotty.tools.dotc.config.Settings._
 import dotty.tools.dotc.config.{ CommonScalaSettings, AllScalaSettings }
 import dotty.tools.dotc.reporting.Reporter
 import dotty.tools.dotc.core.Contexts._
-
-import dotty.tools.scaladoc.Inkuire
 import dotty.tools.scaladoc.Inkuire._
 
 object Scaladoc:
@@ -44,6 +39,7 @@ object Scaladoc:
     documentSyntheticTypes: Boolean = false,
     snippetCompiler: List[String] = Nil,
     noLinkWarnings: Boolean = false,
+    noLinkAssetWarnings: Boolean = false,
     versionsDictionaryUrl: Option[String] = None,
     generateInkuire : Boolean = false,
     apiSubdirectory : Boolean = false,
@@ -146,7 +142,7 @@ object Scaladoc:
       )
 
       if other.nonEmpty then report.warning(
-        s"scaladoc suports only .tasty and .jar files, following files will be ignored: ${other.mkString(", ")}"
+        s"scaladoc supports only .tasty and .jar files, following files will be ignored: ${other.mkString(", ")}"
       )
 
       def defaultDest(): File =
@@ -207,7 +203,7 @@ object Scaladoc:
         classpath.get,
         bootclasspath.get,
         destFile,
-        siteRoot.nonDefault,
+        Option(siteRoot.withDefault(siteRoot.default)),
         projectVersion.nonDefault,
         projectLogo.nonDefault,
         projectFooter.nonDefault,
@@ -226,6 +222,7 @@ object Scaladoc:
         YdocumentSyntheticTypes.get,
         snippetCompiler.get,
         noLinkWarnings.get,
+        noLinkAssetWarnings.get,
         versionsDictionaryUrl.nonDefault,
         generateInkuire.get,
         apiSubdirectory.get,

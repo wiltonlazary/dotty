@@ -111,10 +111,6 @@ object untpd extends Trees.Instance[Untyped] with UntypedTreeInfo {
     override def isType: Boolean = !isTerm
   }
   case class Throw(expr: Tree)(implicit @constructorOnly src: SourceFile) extends TermTree
-  case class Quote(quoted: Tree)(implicit @constructorOnly src: SourceFile) extends TermTree
-  case class Splice(expr: Tree)(implicit @constructorOnly src: SourceFile) extends TermTree {
-    def isInBraces: Boolean = span.end != expr.span.end
-  }
   case class ForYield(enums: List[Tree], expr: Tree)(implicit @constructorOnly src: SourceFile) extends TermTree
   case class ForDo(enums: List[Tree], body: Tree)(implicit @constructorOnly src: SourceFile) extends TermTree
   case class GenFrom(pat: Tree, expr: Tree, checkMode: GenCheckMode)(implicit @constructorOnly src: SourceFile) extends Tree
@@ -141,6 +137,8 @@ object untpd extends Trees.Instance[Untyped] with UntypedTreeInfo {
     val rename: TermName = renamed match
       case Ident(rename: TermName) => rename
       case _ => name
+
+    def isUnimport = rename == nme.WILDCARD
   }
 
   case class Number(digits: String, kind: NumberKind)(implicit @constructorOnly src: SourceFile) extends TermTree
@@ -152,10 +150,17 @@ object untpd extends Trees.Instance[Untyped] with UntypedTreeInfo {
   }
 
   /** {x1, ..., xN} T   (only relevant under captureChecking) */
-  case class CapturingTypeTree(refs: List[Tree], parent: Tree)(implicit @constructorOnly src: SourceFile) extends TypTree
+  case class CapturesAndResult(refs: List[Tree], parent: Tree)(implicit @constructorOnly src: SourceFile) extends TypTree
 
-  /** Short-lived usage in typer, does not need copy/transform/fold infrastructure */
-  case class DependentTypeTree(tp: List[Symbol] => Type)(implicit @constructorOnly src: SourceFile) extends Tree
+  /** A type tree appearing somewhere in the untyped DefDef of a lambda, it will be typed using `tpFun`.
+   *
+   *  @param isResult  Is this the result type of the lambda? This is handled specially in `Namer#valOrDefDefSig`.
+   *  @param tpFun     Compute the type of the type tree given the parameters of the lambda.
+   *                   A lambda has at most one type parameter list followed by exactly one term parameter list.
+   *
+   *  Note: This is only used briefly in Typer and does not need the copy/transform/fold infrastructure.
+   */
+  case class InLambdaTypeTree(isResult: Boolean, tpFun: (List[TypeSymbol], List[TermSymbol]) => Type)(implicit @constructorOnly src: SourceFile) extends Tree
 
   @sharable object EmptyTypeIdent extends Ident(tpnme.EMPTY)(NoSource) with WithoutTypeOrPos[Untyped] {
     override def isEmpty: Boolean = true
@@ -401,6 +406,10 @@ object untpd extends Trees.Instance[Untyped] with UntypedTreeInfo {
   def SeqLiteral(elems: List[Tree], elemtpt: Tree)(implicit src: SourceFile): SeqLiteral = new SeqLiteral(elems, elemtpt)
   def JavaSeqLiteral(elems: List[Tree], elemtpt: Tree)(implicit src: SourceFile): JavaSeqLiteral = new JavaSeqLiteral(elems, elemtpt)
   def Inlined(call: tpd.Tree, bindings: List[MemberDef], expansion: Tree)(implicit src: SourceFile): Inlined = new Inlined(call, bindings, expansion)
+  def Quote(body: Tree, tags: List[Tree])(implicit src: SourceFile): Quote = new Quote(body, tags)
+  def Splice(expr: Tree)(implicit src: SourceFile): Splice = new Splice(expr)
+  def QuotePattern(bindings: List[Tree], body: Tree, quotes: Tree)(implicit src: SourceFile): QuotePattern = new QuotePattern(bindings, body, quotes)
+  def SplicePattern(body: Tree, args: List[Tree])(implicit src: SourceFile): SplicePattern = new SplicePattern(body, args)
   def TypeTree()(implicit src: SourceFile): TypeTree = new TypeTree()
   def InferredTypeTree()(implicit src: SourceFile): TypeTree = new InferredTypeTree()
   def SingletonTypeTree(ref: Tree)(implicit src: SourceFile): SingletonTypeTree = new SingletonTypeTree(ref)
@@ -426,7 +435,7 @@ object untpd extends Trees.Instance[Untyped] with UntypedTreeInfo {
   def Export(expr: Tree, selectors: List[ImportSelector])(implicit src: SourceFile): Export = new Export(expr, selectors)
   def PackageDef(pid: RefTree, stats: List[Tree])(implicit src: SourceFile): PackageDef = new PackageDef(pid, stats)
   def Annotated(arg: Tree, annot: Tree)(implicit src: SourceFile): Annotated = new Annotated(arg, annot)
-  def Hole(isTermHole: Boolean, idx: Int, args: List[Tree], content: Tree, tpt: Tree)(implicit src: SourceFile): Hole = new Hole(isTermHole, idx, args, content, tpt)
+  def Hole(isTerm: Boolean, idx: Int, args: List[Tree], content: Tree)(implicit src: SourceFile): Hole = new Hole(isTerm, idx, args, content)
 
   // ------ Additional creation methods for untyped only -----------------
 
@@ -502,6 +511,9 @@ object untpd extends Trees.Instance[Untyped] with UntypedTreeInfo {
 
   def captureRoot(using Context): Select =
     Select(scalaDot(nme.caps), nme.CAPTURE_ROOT)
+
+  def makeRetaining(parent: Tree, refs: List[Tree], annotName: TypeName)(using Context): Annotated =
+    Annotated(parent, New(scalaAnnotationDot(annotName), List(refs)))
 
   def makeConstructor(tparams: List[TypeDef], vparamss: List[List[ValDef]], rhs: Tree = EmptyTree)(using Context): DefDef =
     DefDef(nme.CONSTRUCTOR, joinParams(tparams, vparamss), TypeTree(), rhs)
@@ -622,14 +634,6 @@ object untpd extends Trees.Instance[Untyped] with UntypedTreeInfo {
       case tree: Throw if expr eq tree.expr => tree
       case _ => finalize(tree, untpd.Throw(expr)(tree.source))
     }
-    def Quote(tree: Tree)(quoted: Tree)(using Context): Tree = tree match {
-      case tree: Quote if quoted eq tree.quoted => tree
-      case _ => finalize(tree, untpd.Quote(quoted)(tree.source))
-    }
-    def Splice(tree: Tree)(expr: Tree)(using Context): Tree = tree match {
-      case tree: Splice if expr eq tree.expr => tree
-      case _ => finalize(tree, untpd.Splice(expr)(tree.source))
-    }
     def ForYield(tree: Tree)(enums: List[Tree], expr: Tree)(using Context): TermTree = tree match {
       case tree: ForYield if (enums eq tree.enums) && (expr eq tree.expr) => tree
       case _ => finalize(tree, untpd.ForYield(enums, expr)(tree.source))
@@ -668,9 +672,9 @@ object untpd extends Trees.Instance[Untyped] with UntypedTreeInfo {
       case tree: Number if (digits == tree.digits) && (kind == tree.kind) => tree
       case _ => finalize(tree, untpd.Number(digits, kind))
     }
-    def CapturingTypeTree(tree: Tree)(refs: List[Tree], parent: Tree)(using Context): Tree = tree match
-      case tree: CapturingTypeTree if (refs eq tree.refs) && (parent eq tree.parent) => tree
-      case _ => finalize(tree, untpd.CapturingTypeTree(refs, parent))
+    def CapturesAndResult(tree: Tree)(refs: List[Tree], parent: Tree)(using Context): Tree = tree match
+      case tree: CapturesAndResult if (refs eq tree.refs) && (parent eq tree.parent) => tree
+      case _ => finalize(tree, untpd.CapturesAndResult(refs, parent))
 
     def TypedSplice(tree: Tree)(splice: tpd.Tree)(using Context): ProxyTree = tree match {
       case tree: TypedSplice if splice `eq` tree.splice => tree
@@ -711,10 +715,6 @@ object untpd extends Trees.Instance[Untyped] with UntypedTreeInfo {
         cpy.Tuple(tree)(transform(trees))
       case Throw(expr) =>
         cpy.Throw(tree)(transform(expr))
-      case Quote(t) =>
-        cpy.Quote(tree)(transform(t))
-      case Splice(expr) =>
-        cpy.Splice(tree)(transform(expr))
       case ForYield(enums, expr) =>
         cpy.ForYield(tree)(transform(enums), transform(expr))
       case ForDo(enums, body) =>
@@ -737,8 +737,8 @@ object untpd extends Trees.Instance[Untyped] with UntypedTreeInfo {
         tree
       case MacroTree(expr) =>
         cpy.MacroTree(tree)(transform(expr))
-      case CapturingTypeTree(refs, parent) =>
-        cpy.CapturingTypeTree(tree)(transform(refs), transform(parent))
+      case CapturesAndResult(refs, parent) =>
+        cpy.CapturesAndResult(tree)(transform(refs), transform(parent))
       case _ =>
         super.transformMoreCases(tree)
     }
@@ -772,10 +772,6 @@ object untpd extends Trees.Instance[Untyped] with UntypedTreeInfo {
         this(x, trees)
       case Throw(expr) =>
         this(x, expr)
-      case Quote(t) =>
-        this(x, t)
-      case Splice(expr) =>
-        this(x, expr)
       case ForYield(enums, expr) =>
         this(this(x, enums), expr)
       case ForDo(enums, body) =>
@@ -800,7 +796,7 @@ object untpd extends Trees.Instance[Untyped] with UntypedTreeInfo {
         this(x, splice)
       case MacroTree(expr) =>
         this(x, expr)
-      case CapturingTypeTree(refs, parent) =>
+      case CapturesAndResult(refs, parent) =>
         this(this(x, refs), parent)
       case _ =>
         super.foldMoreCases(x, tree)

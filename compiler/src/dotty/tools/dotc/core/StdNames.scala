@@ -34,7 +34,6 @@ object StdNames {
     inline val MODULE_INSTANCE_FIELD      = "MODULE$"
 
     inline val Function                   = "Function"
-    inline val ErasedFunction             = "ErasedFunction"
     inline val ContextFunction            = "ContextFunction"
     inline val ErasedContextFunction      = "ErasedContextFunction"
     inline val AbstractFunction           = "AbstractFunction"
@@ -177,6 +176,7 @@ object StdNames {
     final val typeTag: N    = "typeTag"
     final val Expr: N       = "Expr"
     final val String: N     = "String"
+    final val Option: N     = "Option"
     final val Annotation: N = "Annotation"
 
     // fictions we use as both types and terms
@@ -204,6 +204,7 @@ object StdNames {
     final val Null: N                = "Null"
     final val Object: N              = "Object"
     final val FromJavaObject: N      = "<FromJavaObject>"
+    final val Record: N              = "Record"
     final val Product: N             = "Product"
     final val PartialFunction: N     = "PartialFunction"
     final val PrefixType: N          = "PrefixType"
@@ -212,7 +213,6 @@ object StdNames {
     final val Throwable: N           = "Throwable"
     final val IOOBException: N       = "IndexOutOfBoundsException"
     final val FunctionXXL: N         = "FunctionXXL"
-    final val ErasedFunction: N      = "ErasedFunction"
 
     final val Abs: N                  = "Abs"
     final val And: N                  = "&&"
@@ -286,7 +286,7 @@ object StdNames {
 // ----- Term names -----------------------------------------
 
     // Compiler-internal
-    val CAPTURE_ROOT: N             = "*"
+    val CAPTURE_ROOT: N             = "cap"
     val CONSTRUCTOR: N              = "<init>"
     val STATIC_CONSTRUCTOR: N       = "<clinit>"
     val EVT2U: N                    = "evt2u$"
@@ -301,6 +301,7 @@ object StdNames {
     val THROWS: N                   = "$throws"
     val U2EVT: N                    = "u2evt$"
     val ALLARGS: N                  = "$allArgs"
+    val UPARROW: N                  = "^"
 
     final val Nil: N                = "Nil"
     final val Predef: N             = "Predef"
@@ -392,6 +393,7 @@ object StdNames {
     val UNIT : N                = "UNIT"
     val acc: N                  = "acc"
     val adhocExtensions: N      = "adhocExtensions"
+    val andThen: N              = "andThen"
     val annotation: N           = "annotation"
     val any2stringadd: N        = "any2stringadd"
     val anyHash: N              = "anyHash"
@@ -440,11 +442,13 @@ object StdNames {
     val command: N              = "command"
     val common: N               = "common"
     val compiletime : N         = "compiletime"
+    val compose: N              = "compose"
     val conforms_ : N           = "$conforms"
     val contents: N             = "contents"
     val copy: N                 = "copy"
-    val currentMirror: N        = "currentMirror"
     val create: N               = "create"
+    val currentMirror: N        = "currentMirror"
+    val curried: N              = "curried"
     val definitions: N          = "definitions"
     val delayedInit: N          = "delayedInit"
     val delayedInitArg: N       = "delayedInit$body"
@@ -619,6 +623,7 @@ object StdNames {
     val transparent : N         = "transparent"
     val tree : N                = "tree"
     val true_ : N               = "true"
+    val tupled: N               = "tupled"
     val typedProductIterator: N = "typedProductIterator"
     val typeTagToManifest: N    = "typeTagToManifest"
     val unapply: N              = "unapply"
@@ -912,6 +917,10 @@ object StdNames {
     final val VOLATILEkw: N     = kw("volatile")
     final val WHILEkw: N        = kw("while")
 
+    final val RECORDid: N         = "record"
+    final val VARid: N            = "var"
+    final val YIELDid: N          = "yield"
+
     final val BoxedBoolean: N       = "java.lang.Boolean"
     final val BoxedByte: N          = "java.lang.Byte"
     final val BoxedCharacter: N     = "java.lang.Character"
@@ -943,6 +952,8 @@ object StdNames {
     final val BooleanBeanProperty: N = "scala.beans.BooleanBeanProperty"
     final val JavaSerializable: N    = "java.io.Serializable"
   }
+
+
 
   class JavaTermNames extends JavaNames[TermName] {
     protected def fromString(s: String): TermName = termName(s)

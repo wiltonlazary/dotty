@@ -1,3 +1,5 @@
+//> using options -Xfatal-warnings
+
 sealed trait NatT
 case class Zero() extends NatT
 case class Succ[+N <: NatT](n: N) extends NatT
@@ -22,7 +24,7 @@ transparent inline def transparentInlineMod2(inline n: NatT):  NatT = inline n m
   case Succ(Zero()) => Succ(Zero())
   case Succ(Succ(predPredN)) => transparentInlineMod2(predPredN)
 
-def dependentlyTypedMod2[N <: NatT](n: N): Mod2[N] = n match // exhaustivity warning; unexpected
+def dependentlyTypedMod2[N <: NatT](n: N): Mod2[N] = n match
   case Zero(): Zero => Zero() // error
   case Succ(Zero()): Succ[Zero] => Succ(Zero()) // error
   case Succ(Succ(predPredN)): Succ[Succ[_]] => dependentlyTypedMod2(predPredN) // error
@@ -57,5 +59,5 @@ inline def transparentInlineFoo(inline n: NatT): NatT = inline transparentInline
   println(transparentInlineMod2(Succ(Succ(Succ(Zero()))))) // prints Succ(Zero()), as expected
   println(transparentInlineFoo(Succ(Succ(Succ(Zero()))))) // prints Zero(), as expected
   println(dependentlyTypedMod2(Succ(Succ(Succ(Zero()))))) // runtime error; unexpected
-//  println(inlineDependentlyTypedMod2(Succ(Succ(Succ(Zero()))))) // doesn't compile; unexpected
-//  println(transparentInlineDependentlyTypedMod2(Succ(Succ(Succ(Zero()))))) // doesn't compile; unexpected
+  println(inlineDependentlyTypedMod2(Succ(Succ(Succ(Zero()))))) // prints Succ(Zero()), as expected
+  println(transparentInlineDependentlyTypedMod2(Succ(Succ(Succ(Zero()))))) // prints Succ(Zero()), as expected

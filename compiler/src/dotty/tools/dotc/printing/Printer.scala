@@ -4,10 +4,10 @@ package printing
 
 import core._
 import Texts._, ast.Trees._
-import Types.{Type, SingletonType, LambdaParam},
+import Types.{Type, SingletonType, LambdaParam, NamedType},
        Symbols.Symbol, Scopes.Scope, Constants.Constant,
        Names.Name, Denotations._, Annotations.Annotation, Contexts.Context
-import typer.Implicits.SearchResult
+import typer.Implicits.*
 import util.SourcePosition
 import typer.ImportInfo
 
@@ -101,7 +101,7 @@ abstract class Printer {
   def toTextRef(tp: SingletonType): Text
 
   /** Textual representation of a prefix of some reference, ending in `.` or `#` */
-  def toTextPrefix(tp: Type): Text
+  def toTextPrefixOf(tp: NamedType): Text
 
   /** Textual representation of a reference in a capture set */
   def toTextCaptureRef(tp: Type): Text
@@ -153,6 +153,9 @@ abstract class Printer {
   /** Textual representation of source position */
   def toText(pos: SourcePosition): Text
 
+  /** Textual representation of implicit candidates. */
+  def toText(cand: Candidate): Text
+
   /** Textual representation of implicit search result */
   def toText(result: SearchResult): Text
 
@@ -174,15 +177,15 @@ abstract class Printer {
     atPrec(GlobalPrec) { elem.toText(this) }
 
   /** Render elements alternating with `sep` string */
-  def toText(elems: Traversable[Showable], sep: String): Text =
+  def toText(elems: Iterable[Showable], sep: String): Text =
     Text(elems map (_ toText this), sep)
 
   /** Render elements within highest precedence */
-  def toTextLocal(elems: Traversable[Showable], sep: String): Text =
+  def toTextLocal(elems: Iterable[Showable], sep: String): Text =
     atPrec(DotPrec) { toText(elems, sep) }
 
   /** Render elements within lowest precedence */
-  def toTextGlobal(elems: Traversable[Showable], sep: String): Text =
+  def toTextGlobal(elems: Iterable[Showable], sep: String): Text =
     atPrec(GlobalPrec) { toText(elems, sep) }
 
   /** A plain printer without any embellishments */

@@ -20,6 +20,26 @@ To construct tokens, characters are distinguished according to the following cla
 1. Delimiter characters ``‘`’ | ‘'’ | ‘"’ | ‘.’ | ‘;’ | ‘,’ ``.
 1. Operator characters. These consist of all printable ASCII characters (`\u0020` - `\u007E`) that are in none of the sets above, mathematical symbols (`Sm`) and other symbols (`So`).
 
+## Optional Braces
+
+The principle of optional braces is that any keyword that can be followed by `{` can also be followed by an indented block, without needing an intervening `:`.
+(Allowing an optional `:` would be counterproductive since it would introduce several ways to do the same thing.)
+
+The lexical analyzer inserts `indent` and `outdent` tokens that represent regions of indented code [at certain points](./other-new-features/indentation.md).
+
+In the context-free productions below we use the notation `<<< ts >>>` to indicate a token sequence `ts` that is either enclosed in a pair of braces `{ ts }` or that constitutes an indented region `indent ts outdent`.
+Analogously, the notation `:<<< ts >>>` indicates a token sequence `ts` that is either enclosed in a pair of braces `{ ts }` or that constitutes an indented region `indent ts outdent` that follows a `colon` token.
+
+A `colon` token reads as the standard colon "`:`" but is generated instead of it where `colon` is legal according to the context free syntax, but only if the previous token is an alphanumeric identifier, a backticked identifier, or one of the tokens `this`, `super`, `new`, "`)`", and "`]`".
+
+```
+colon         ::=  ':'    -- with side conditions explained above
+ <<< ts >>>   ::=  ‘{’ ts ‘}’
+                |  indent ts outdent
+:<<< ts >>>   ::=  [nl] ‘{’ ts ‘}’
+                |  colon indent ts outdent
+```
+
 ## Identifiers
 
 ```ebnf
@@ -27,8 +47,9 @@ op       ::=  opchar {opchar}
 varid    ::=  lower idrest
 boundvarid ::=  varid
              | ‘`’ varid ‘`’
-plainid  ::=  upper idrest
-           |  varid
+alphaid    ::=  upper idrest
+             |  varid
+plainid  ::=  alphaid
            |  op
 id       ::=  plainid
            |  ‘`’ { charNoBackQuoteOrNewline | escapeSeq } ‘`’
@@ -79,28 +100,53 @@ Some examples of constant identifiers are
 The ‘$’ character is reserved for compiler-synthesized identifiers.
 User programs should not define identifiers that contain ‘$’ characters.
 
+### Regular keywords
+
 The following names are reserved words instead of being members of the syntactic class `id` of lexical identifiers.
 
 ```scala
-abstract    case        catch       class       def
-do          else        extends     false       final
-finally     for         forSome     if          implicit
-import      lazy        macro       match       new
-null        object      override    package     private
-protected   return      sealed      super       this
-throw       trait       try         true        type
-val         var         while       with        yield
-_    :    =    =>    <-    <:    <%     >:    #    @
+abstract  case      catch     class     def       do        else
+enum      export    extends   false     final     finally   for
+given     if        implicit  import    lazy      match     new
+null      object    override  package   private   protected return
+sealed    super     then      throw     trait     true      try
+type      val       var       while     with      yield
+:         =         <-        =>        <:        >:        #
+@         =>>       ?=>
 ```
 
-The Unicode operators `\u21D2` ‘´\Rightarrow´’ and `\u2190` ‘´\leftarrow´’, which have the ASCII equivalents `=>` and `<-`, are also reserved.
+### Soft keywords
 
-> Here are examples of identifiers:
-> ```scala
->     x         Object        maxIndex   p2p      empty_?
->     +         `yield`       αρετη     _y       dot_product_*
->     __system  _MAX_LEN_
-> ```
+Additionally, the following soft keywords are reserved only in some situations.
+
+```
+as      derives      end      extension   infix   inline   opaque
+open    transparent  using
+|       *            +        -
+```
+
+A soft modifier is one of the identifiers `infix`, `inline`, `opaque`, `open` and `transparent`.
+
+A soft keyword is a soft modifier, or one of `as`, `derives`, `end`, `extension`, `using`, `|`, `+`, `-`, `*`.
+
+A soft modifier is treated as an actual modifier of a definition if it is followed by a hard modifier or a keyword combination starting a definition (`def`, `val`, `var`, `type`, `given`, `class`, `trait`, `object`, `enum`, `case class`, `case object`).
+Between the two words, there may be a sequence of newline tokens and/or other soft modifiers.
+
+Otherwise, soft keywords are treated as actual keywords in the following situations:
+
+ - `as`, if it appears in a renaming import clause.
+ - `derives`, if it appears after an extension clause or after the name and possibly parameters of a class, trait, object, or enum definition.
+ - `end`, if it appears at the start of a line following a statement (i.e. definition or toplevel expression) and is followed on the same line by a single non-comment token that is:
+   - one of the keywords `for`, `given`, `if`, `match`, `new`, `this`, `throw`, `try`, `val`, `while`, or
+   - an identifier.
+ - `extension`, if it appears at the start of a statement and is followed by `(` or `[`.
+ - `inline`, if it is followed by any token that can start an expression.
+ - `using`, if it appears at the start of a parameter or argument list.
+ - `|`, if it separates two patterns in an alternative.
+ - `+`, `-`, if they appear in front of a type parameter.
+ - `*`, if it appears in a wildcard import, or if it follows the type of a parameter, or if it appears in a vararg splice `x*`.
+
+Everywhere else, a soft keyword is treated as a normal identifier.
 
 <!-- -->
 
@@ -118,7 +164,7 @@ Scala is a line-oriented language where statements may be terminated by semi-col
 A newline in a Scala source text is treated as the special token “nl” if the three following criteria are satisfied:
 
 1. The token immediately preceding the newline can terminate a statement.
-1. The token immediately following the newline can begin a statement.
+1. The token immediately following the newline can begin a statement and is not a _leading infix operator_.
 1. The token appears in a region where newlines are enabled.
 
 The tokens that can terminate a statement are: literals, identifiers and the following delimiters and reserved words:
@@ -138,6 +184,14 @@ with    yield    ,    .    ;    :    =    =>    <-    <:    <%
 
 A `case` token can begin a statement only if followed by a
 `class` or `object` token.
+
+A _leading infix operator_ is a symbolic identifier such as `+`, or `approx_==`, or an identifier in backticks that:
+
+- starts a new line, and
+- is not following a blank line, and
+- is followed by at least one whitespace character (including new lines) and a token that can start an expression.
+
+Furthermore, if the operator appears on its own line, the next line must have at least the same indentation width as the operator.
 
 Newlines are enabled in:
 
@@ -164,13 +218,13 @@ Multiple newline tokens are accepted in the following places (note that a semico
 
 - between the condition of a [conditional expression](06-expressions.html#conditional-expressions) or [while loop](06-expressions.html#while-loop-expressions) and the next following expression,
 - between the enumerators of a [for-comprehension](06-expressions.html#for-comprehensions-and-for-loops) and the next following expression, and
-- after the initial `type` keyword in a [type definition or declaration](04-basic-declarations-and-definitions.html#type-declarations-and-type-aliases).
+- after the initial `type` keyword in a [type definition](04-basic-definitions.html#type-member-definitions).
 
 A single new line token is accepted
 
 - in front of an opening brace ‘{’, if that brace is a legal continuation of the current statement or expression,
 - after an [infix operator](06-expressions.html#prefix,-infix,-and-postfix-operations), if the first token on the next line can start an expression,
-- in front of a [parameter clause](04-basic-declarations-and-definitions.html#function-declarations-and-definitions), and
+- in front of a [parameter clause](04-basic-definitions.html#method-definitions), and
 - after an [annotation](11-annotations.html#user-defined-annotations).
 
 > The newline tokens between the two lines are not treated as statement separators.
@@ -259,7 +313,7 @@ A single new line token is accepted
 
 ## Literals
 
-There are literals for integer numbers, floating point numbers, characters, booleans, symbols, strings.
+There are literals for integer numbers, floating point numbers, characters, booleans, strings.
 The syntax of these literals is in each case as in Java.
 
 <!-- TODO
@@ -274,7 +328,6 @@ Literal  ::=  [‘-’] integerLiteral
            |  characterLiteral
            |  stringLiteral
            |  interpolatedString
-           |  symbolLiteral
            |  ‘null’
 ```
 
@@ -283,8 +336,8 @@ Literal  ::=  [‘-’] integerLiteral
 ```ebnf
 integerLiteral  ::=  (decimalNumeral | hexNumeral)
                        [‘L’ | ‘l’]
-decimalNumeral  ::=  digit {digit}
-hexNumeral      ::=  ‘0’ (‘x’ | ‘X’) hexDigit {hexDigit}
+decimalNumeral   ::=  ‘0’ | digit [{digit | ‘_’} digit]
+hexNumeral       ::=  ‘0’ (‘x’ | ‘X’) hexDigit [{hexDigit | ‘_’} hexDigit]
 ```
 
 Values of type `Int` are all integer numbers between $-2\^{31}$ and $2\^{31}-1$, inclusive.
@@ -313,12 +366,11 @@ The digits of a numeric literal may be separated by arbitrarily many underscores
 ### Floating Point Literals
 
 ```ebnf
-floatingPointLiteral  ::=  digit {digit} ‘.’ digit {digit} [exponentPart] [floatType]
-                        |  ‘.’ digit {digit} [exponentPart] [floatType]
-                        |  digit {digit} exponentPart [floatType]
-                        |  digit {digit} [exponentPart] floatType
-exponentPart          ::=  (‘E’ | ‘e’) [‘+’ | ‘-’] digit {digit}
-floatType             ::=  ‘F’ | ‘f’ | ‘D’ | ‘d’
+floatingPointLiteral
+                 ::=  [decimalNumeral] ‘.’ digit [{digit | ‘_’} digit] [exponentPart] [floatType]
+                   |  decimalNumeral exponentPart [floatType]
+                   |  decimalNumeral floatType
+exponentPart     ::=  (‘E’ | ‘e’) [‘+’ | ‘-’] digit [{digit | ‘_’} digit]
 ```
 
 Floating point literals are of type `Float` when followed by a floating point type suffix `F` or `f`, and are of type `Double` otherwise.
@@ -449,7 +501,7 @@ Inside an interpolated string none of the usual escape characters are interprete
 Note that the sequence `\"` does not close a normal string literal (enclosed in single quotes).
 
 There are three forms of dollar sign escape.
-The most general form encloses an expression in `${` and `}`, i.e. `${expr}`. 
+The most general form encloses an expression in `${` and `}`, i.e. `${expr}`.
 The expression enclosed in the braces that follow the leading `$` character is of syntactical category BlockExpr.
 Hence, it can contain multiple statements, and newlines are significant.
 Single ‘$’-signs are not permitted in isolation in an interpolated string.
@@ -489,16 +541,6 @@ The following character escape sequences are recognized in character and string 
 In addition, Unicode escape sequences of the form `\uxxxx`, where each `x` is a hex digit are recognized in character and string literals.
 
 It is a compile time error if a backslash character in a character or string literal does not start a valid escape sequence.
-
-### Symbol literals
-
-```ebnf
-symbolLiteral  ::=  ‘'’ plainid
-```
-
-A symbol literal `'x` is deprecated shorthand for the expression `scala.Symbol("x")`.
-
-The `apply` method of `Symbol`'s companion object caches weak references to `Symbol`s, thus ensuring that identical symbol literals are equivalent with respect to reference equality.
 
 ## Whitespace and Comments
 

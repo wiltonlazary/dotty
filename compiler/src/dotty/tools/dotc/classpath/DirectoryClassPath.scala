@@ -6,7 +6,7 @@ package dotty.tools.dotc.classpath
 import scala.language.unsafeNulls
 
 import java.io.{File => JFile}
-import java.net.URL
+import java.net.{URI, URL}
 import java.nio.file.{FileSystems, Files}
 
 import dotty.tools.dotc.classpath.PackageNameUtils.{packageContains, separatePkgAndClassNames}
@@ -194,7 +194,7 @@ final class JrtClassPath(fs: java.nio.file.FileSystem) extends ClassPath with No
     if (inPackage.isRoot) ClassPathEntries(packages(inPackage), Nil)
     else ClassPathEntries(packages(inPackage), classes(inPackage))
 
-  def asURLs: Seq[URL] = Seq(new URL("jrt:/"))
+  def asURLs: Seq[URL] = Seq(new URI("jrt:/").toURL)
   // We don't yet have a scheme to represent the JDK modules in our `-classpath`.
   // java models them as entries in the new "module path", we'll probably need to follow this.
   def asClassPathStrings: Seq[String] = Nil
@@ -278,15 +278,17 @@ case class DirectoryClassPath(dir: JFile) extends JFileDirectoryLookup[ClassFile
 
   def findClassFile(className: String): Option[AbstractFile] = {
     val relativePath = FileUtils.dirPath(className)
-    val classFile = new JFile(dir, relativePath + ".class")
-    if (classFile.exists) {
-      Some(classFile.toPath.toPlainFile)
-    }
-    else None
+    val tastyFile = new JFile(dir, relativePath + ".tasty")
+    if tastyFile.exists then Some(tastyFile.toPath.toPlainFile)
+    else
+      val classFile = new JFile(dir, relativePath + ".class")
+      if classFile.exists then  Some(classFile.toPath.toPlainFile)
+      else None
   }
 
   protected def createFileEntry(file: AbstractFile): ClassFileEntryImpl = ClassFileEntryImpl(file)
-  protected def isMatchingFile(f: JFile): Boolean = f.isClass
+  protected def isMatchingFile(f: JFile): Boolean =
+    f.isTasty || (f.isClass && f.classToTasty.isEmpty)
 
   private[dotty] def classes(inPackage: PackageName): Seq[ClassFileEntry] = files(inPackage)
 }

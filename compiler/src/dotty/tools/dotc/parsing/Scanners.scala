@@ -227,11 +227,11 @@ object Scanners {
       */
     private var docstringMap: SortedMap[Int, Comment] = SortedMap.empty
 
-    /* A Buffer for comment positions */
-    private val commentPosBuf = new mutable.ListBuffer[Span]
+    /* A Buffer for comments */
+    private val commentBuf = new mutable.ListBuffer[Comment]
 
-    /** Return a list of all the comment positions */
-    def commentSpans: List[Span] = commentPosBuf.toList
+    /** Return a list of all the comments */
+    def comments: List[Comment] = commentBuf.toList
 
     private def addComment(comment: Comment): Unit = {
       val lookahead = lookaheadReader()
@@ -246,7 +246,7 @@ object Scanners {
     def getDocComment(pos: Int): Option[Comment] = docstringMap.get(pos)
 
     /** A buffer for comments */
-    private val commentBuf = CharBuffer(initialCharBufferSize)
+    private val currentCommentBuf = CharBuffer(initialCharBufferSize)
 
     def toToken(identifier: SimpleName): Token =
       def handleMigration(keyword: Token): Token =
@@ -523,7 +523,8 @@ object Scanners {
      *
      *      The following tokens can start an indentation region:
      *
-     *         :  =  =>  <-  if  then  else  while  do  try  catch  finally  for  yield  match
+     *         :  =  =>  <-  if  then  else  while  do  try  catch
+     *         finally  for  yield  match  throw  return  with
      *
      *      Inserting an INDENT starts a new indentation region with the indentation of the current
      *      token as indentation width.
@@ -610,11 +611,17 @@ object Scanners {
               case r: Indented =>
                 insert(OUTDENT, offset)
                 handleNewIndentWidth(r.enclosing, ir =>
-                  val lw = lastWidth
-                  errorButContinue(
-                    em"""The start of this line does not match any of the previous indentation widths.
-                        |Indentation width of current line : $nextWidth
-                        |This falls between previous widths: ${ir.width} and $lw"""))
+                  if next.token == DOT
+                      && !nextWidth.isClose(r.indentWidth)
+                      && !nextWidth.isClose(ir.indentWidth)
+                  then
+                    ir.otherIndentWidths += nextWidth
+                  else
+                    val lw = lastWidth
+                    errorButContinue(
+                      em"""The start of this line does not match any of the previous indentation widths.
+                          |Indentation width of current line : $nextWidth
+                          |This falls between previous widths: ${ir.width} and $lw"""))
               case r =>
                 if skipping then
                   if r.enclosing.isClosedByUndentAt(nextWidth) then
@@ -1012,7 +1019,7 @@ object Scanners {
 
     private def skipComment(): Boolean = {
       def appendToComment(ch: Char) =
-        if (keepComments) commentBuf.append(ch)
+        if (keepComments) currentCommentBuf.append(ch)
       def nextChar() = {
         appendToComment(ch)
         Scanner.this.nextChar()
@@ -1040,9 +1047,9 @@ object Scanners {
       def finishComment(): Boolean = {
         if (keepComments) {
           val pos = Span(start, charOffset - 1, start)
-          val comment = Comment(pos, commentBuf.toString)
-          commentBuf.clear()
-          commentPosBuf += pos
+          val comment = Comment(pos, currentCommentBuf.toString)
+          currentCommentBuf.clear()
+          commentBuf += comment
 
           if (comment.isDocComment)
             addComment(comment)
@@ -1058,7 +1065,7 @@ object Scanners {
       else if (ch == '*') { nextChar(); skipComment(); finishComment() }
       else {
         // This was not a comment, remove the `/` from the buffer
-        commentBuf.clear()
+        currentCommentBuf.clear()
         false
       }
     }
@@ -1664,6 +1671,17 @@ object Scanners {
     }
 
     def < (that: IndentWidth): Boolean = this <= that && !(that <= this)
+
+    /** Does `this` differ from `that` by not more than a single space? */
+    def isClose(that: IndentWidth): Boolean = this match
+      case Run(ch1, n1) =>
+        that match
+          case Run(ch2, n2) => ch1 == ch2 && ch1 != '\t' && (n1 - n2).abs <= 1
+          case Conc(l, r) => false
+      case Conc(l1, r1) =>
+        that match
+          case Conc(l2, r2) => l1 == l2 && r1.isClose(r2)
+          case _ => false
 
     def toPrefix: String = this match {
       case Run(ch, n) => ch.toString * n
