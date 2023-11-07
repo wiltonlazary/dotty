@@ -2,30 +2,30 @@ package dotty.tools
 package dotc
 package reporting
 
-import core._
-import Contexts._
-import Decorators._, Symbols._, Names._, NameOps._, Types._, Flags._, Phases._
+import core.*
+import Contexts.*
+import Decorators.*, Symbols.*, Names.*, NameOps.*, Types.*, Flags.*, Phases.*
 import Denotations.SingleDenotation
 import SymDenotations.SymDenotation
-import NameKinds.WildcardParamName
+import NameKinds.{WildcardParamName, ContextFunctionParamName}
 import parsing.Scanners.Token
 import parsing.Tokens
-import printing.Highlighting._
+import printing.Highlighting.*
 import printing.Formatting
-import ErrorMessageID._
+import ErrorMessageID.*
 import ast.Trees
 import config.{Feature, ScalaVersion}
 import typer.ErrorReporting.{err, matchReductionAddendum, substitutableTypeSymbolsInScope}
-import typer.ProtoTypes.ViewProto
+import typer.ProtoTypes.{ViewProto, SelectionProto, FunProto}
 import typer.Implicits.*
 import typer.Inferencing
 import scala.util.control.NonFatal
 import StdNames.nme
 import printing.Formatting.hl
-import ast.Trees._
+import ast.Trees.*
 import ast.untpd
 import ast.tpd
-import transform.SymUtils._
+import transform.SymUtils.*
 import scala.util.matching.Regex
 import java.util.regex.Matcher.quoteReplacement
 import cc.CaptureSet.IdentityCaptRefMap
@@ -34,6 +34,7 @@ import dotty.tools.dotc.util.Spans.Span
 import dotty.tools.dotc.util.SourcePosition
 import scala.jdk.CollectionConverters.*
 import dotty.tools.dotc.util.SourceFile
+import DidYouMean.*
 
 /**  Messages
   *  ========
@@ -137,10 +138,10 @@ extends EmptyCatchOrFinallyBlock(tryBody, EmptyCatchAndFinallyBlockID) {
         |its body in a block; no exceptions are handled."""
 }
 
-class DeprecatedWithOperator()(using Context)
+class DeprecatedWithOperator(rewrite: String)(using Context)
 extends SyntaxMsg(DeprecatedWithOperatorID) {
   def msg(using Context) =
-    i"""${hl("with")} as a type operator has been deprecated; use ${hl("&")} instead"""
+    i"""${hl("with")} as a type operator has been deprecated; use ${hl("&")} instead$rewrite"""
   def explain(using Context) =
     i"""|Dotty introduces intersection types - ${hl("&")} types. These replace the
         |use of the ${hl("with")} keyword. There are a few differences in
@@ -166,21 +167,24 @@ class AnonymousFunctionMissingParamType(param: untpd.ValDef,
                                         (using Context)
 extends TypeMsg(AnonymousFunctionMissingParamTypeID) {
   def msg(using Context) = {
-    val ofFun =
+    val paramDescription =
       if param.name.is(WildcardParamName)
-          || (MethodType.syntheticParamNames(tree.args.length + 1) contains param.name)
-      then i"\n\nIn expanded function:\n$tree"
+          || param.name.is(ContextFunctionParamName)
+          || MethodType.syntheticParamNames(tree.args.length + 1).contains(param.name)
+      then i"\nin expanded function:\n  $tree"
       else ""
 
     val inferred =
-      if (inferredType == WildcardType) ""
-      else i"\n\nPartially inferred type for the parameter: $inferredType"
+      if inferredType == WildcardType then ""
+      else i"\nWhat I could infer was: $inferredType"
 
     val expected =
-      if (expectedType == WildcardType) ""
-      else i"\n\nExpected type for the whole anonymous function: $expectedType"
+      if expectedType == WildcardType then ""
+      else i"\nExpected type for the whole anonymous function:\n  $expectedType"
 
-    i"Could not infer type for parameter ${param.name} of anonymous function$ofFun$inferred$expected"
+    i"""Missing parameter type
+       |
+       |I could not infer the type of the parameter ${param.name}$paramDescription$inferred$expected"""
   }
 
   def explain(using Context) = ""
@@ -243,14 +247,29 @@ extends NamingMsg(DuplicateBindID) {
   }
 }
 
-class MissingIdent(tree: untpd.Ident, treeKind: String, val name: Name)(using Context)
+class MissingIdent(tree: untpd.Ident, treeKind: String, val name: Name, proto: Type)(using Context)
 extends NotFoundMsg(MissingIdentID) {
-  def msg(using Context) = i"Not found: $treeKind$name"
+  def msg(using Context) =
+    val missing = name.show
+    val addendum =
+      didYouMean(
+        inScopeCandidates(name.isTypeName, isApplied = proto.isInstanceOf[FunProto], rootImportOK = true)
+          .closestTo(missing),
+        proto, "")
+
+    i"Not found: $treeKind$name$addendum"
   def explain(using Context) = {
-    i"""|The identifier for `$treeKind$name` is not bound, that is,
-        |no declaration for this identifier can be found.
-        |That can happen, for example, if `$name` or its declaration has either been
-        |misspelt or if an import is missing."""
+    i"""|Each identifier in Scala needs a matching declaration. There are two kinds of
+        |identifiers: type identifiers and value identifiers. Value identifiers are introduced
+        |by `val`, `def`, or `object` declarations. Type identifiers are introduced by `type`,
+        |`class`, `enum`, or `trait` declarations.
+        |
+        |Identifiers refer to matching declarations in their environment, or they can be
+        |imported from elsewhere.
+        |
+        |Possible reasons why no matching declaration was found:
+        | - The declaration or the use is mis-spelt.
+        | - An import is missing."""
   }
 }
 
@@ -309,47 +328,12 @@ class TypeMismatch(found: Type, expected: Type, inTree: Option[untpd.Tree], adde
 
 end TypeMismatch
 
-class NotAMember(site: Type, val name: Name, selected: String, addendum: => String = "")(using Context)
+class NotAMember(site: Type, val name: Name, selected: String, proto: Type, addendum: => String = "")(using Context)
 extends NotFoundMsg(NotAMemberID), ShowMatchTrace(site) {
   //println(i"site = $site, decls = ${site.decls}, source = ${site.typeSymbol.sourceFile}") //DEBUG
 
   def msg(using Context) = {
-    import core.Flags._
-    val maxDist = 3  // maximal number of differences to be considered for a hint
     val missing = name.show
-
-    // The symbols of all non-synthetic, non-private members of `site`
-    // that are of the same type/term kind as the missing member.
-    def candidates: Set[Symbol] =
-      for
-        bc <- site.widen.baseClasses.toSet
-        sym <- bc.info.decls.filter(sym =>
-          sym.isType == name.isTypeName
-          && !sym.isConstructor
-          && !sym.flagsUNSAFE.isOneOf(Synthetic | Private))
-      yield sym
-
-    // Calculate Levenshtein distance
-    def distance(s1: String, s2: String): Int =
-      val dist = Array.ofDim[Int](s2.length + 1, s1.length + 1)
-      for
-        j <- 0 to s2.length
-        i <- 0 to s1.length
-      do
-        dist(j)(i) =
-          if j == 0 then i
-          else if i == 0 then j
-          else if s2(j - 1) == s1(i - 1) then dist(j - 1)(i - 1)
-          else (dist(j - 1)(i) min dist(j)(i - 1) min dist(j - 1)(i - 1)) + 1
-      dist(s2.length)(s1.length)
-
-    // A list of possible candidate symbols with their Levenstein distances
-    // to the name of the missing member
-    def closest: List[(Int, Symbol)] = candidates
-      .toList
-      .map(sym => (distance(sym.name.show, missing), sym))
-      .filter((d, sym) => d <= maxDist && d < missing.length && d < sym.name.show.length)
-      .sortBy((d, sym) => (d, sym.name.show))  // sort by distance first, alphabetically second
 
     val enumClause =
       if ((name eq nme.values) || (name eq nme.valueOf)) && site.classSymbol.companionClass.isEnumClass then
@@ -367,17 +351,18 @@ extends NotFoundMsg(NotAMemberID), ShowMatchTrace(site) {
 
     val finalAddendum =
       if addendum.nonEmpty then prefixEnumClause(addendum)
-      else closest match
-        case (d, sym) :: _ =>
-          val siteName = site match
-            case site: NamedType => site.name.show
-            case site => i"$site"
-          val showName =
-            // Add .type to the name if it is a module
-            if sym.is(ModuleClass) then s"${sym.name.show}.type"
-            else sym.name.show
-          s" - did you mean $siteName.$showName?$enumClause"
-        case Nil => prefixEnumClause("")
+      else
+        val hint = didYouMean(
+          memberCandidates(site, name.isTypeName, isApplied = proto.isInstanceOf[FunProto])
+            .closestTo(missing)
+            .map((d, sym) => (d, Binding(sym.name, sym, site))),
+          proto,
+          prefix = site match
+            case site: NamedType => i"${site.name}."
+            case site => i"$site."
+        )
+        if hint.isEmpty then prefixEnumClause("")
+        else hint ++ enumClause
 
     i"$selected $name is not a member of ${site.widen}$finalAddendum"
   }
@@ -876,7 +861,7 @@ extends Message(PatternMatchExhaustivityID) {
 
     val pathes = List(
       ActionPatch(
-        srcPos = endPos, 
+        srcPos = endPos,
         replacement = uncoveredCases.map(c => indent(s"case $c => ???", startColumn))
           .mkString("\n", "\n", "")
       ),
@@ -973,66 +958,63 @@ extends SyntaxMsg(IllegalStartOfSimplePatternID) {
   def msg(using Context) = "pattern expected"
   def explain(using Context) = {
     val sipCode =
-      """def f(x: Int, y: Int) = x match {
-        |  case `y` => ...
-        |}
-      """
+      """def f(x: Int, y: Int) = x match
+        |    case `y` => ...""".stripMargin
     val constructorPatternsCode =
       """case class Person(name: String, age: Int)
         |
-        |def test(p: Person) = p match {
-        |  case Person(name, age) => ...
-        |}
-      """
-    val tupplePatternsCode =
-      """def swap(tuple: (String, Int)): (Int, String) = tuple match {
-        |  case (text, number) => (number, text)
-        |}
-      """
+        |  def test(p: Person) = p match
+        |    case Person(name, age) => ...""".stripMargin
+    val tuplePatternsCode =
+      """def swap(tuple: (String, Int)): (Int, String) = tuple match
+        |    case (text, number) => (number, text)""".stripMargin
     val patternSequencesCode =
-      """def getSecondValue(list: List[Int]): Int = list match {
-        |  case List(_, second, x:_*) => second
-        |  case _ => 0
-        |}"""
+      """def getSecondValue(list: List[Int]): Int = list match
+        |    case List(_, second, x*) => second
+        |    case _ => 0""".stripMargin
     i"""|Simple patterns can be divided into several groups:
-        |- Variable Patterns: ${hl("case x => ...")}.
+        |- Variable Patterns: ${hl("case x => ...")} or ${hl("case _ => ...")}
         |  It matches any value, and binds the variable name to that value.
         |  A special case is the wild-card pattern _ which is treated as if it was a fresh
         |  variable on each occurrence.
         |
-        |- Typed Patterns: ${hl("case x: Int => ...")} or ${hl("case _: Int => ...")}.
+        |- Typed Patterns: ${hl("case x: Int => ...")} or ${hl("case _: Int => ...")}
         |  This pattern matches any value matched by the specified type; it binds the variable
         |  name to that value.
         |
-        |- Literal Patterns: ${hl("case 123 => ...")} or ${hl("case 'A' => ...")}.
+        |- Given Patterns: ${hl("case given ExecutionContext => ...")}
+        |  This pattern matches any value matched by the specified type; it binds a ${hl("given")}
+        |  instance with the same type to that value.
+        |
+        |- Literal Patterns: ${hl("case 123 => ...")} or ${hl("case 'A' => ...")}
         |  This type of pattern matches any value that is equal to the specified literal.
         |
         |- Stable Identifier Patterns:
         |
-        |  $sipCode
+        |  ${hl(sipCode)}
         |
         |  the match succeeds only if the x argument and the y argument of f are equal.
         |
         |- Constructor Patterns:
         |
-        |  $constructorPatternsCode
+        |  ${hl(constructorPatternsCode)}
         |
         |  The pattern binds all object's fields to the variable names (name and age, in this
         |  case).
         |
         |- Tuple Patterns:
         |
-        |  $tupplePatternsCode
+        |  ${hl(tuplePatternsCode)}
         |
         |  Calling:
         |
-        |  ${hl("""swap(("Luftballons", 99)""")}
+        |  ${hl("""swap(("Luftballons", 99))""")}
         |
         |  would give ${hl("""(99, "Luftballons")""")} as a result.
         |
         |- Pattern Sequences:
         |
-        |  $patternSequencesCode
+        |  ${hl(patternSequencesCode)}
         |
         |  Calling:
         |
@@ -1190,7 +1172,7 @@ extends ReferenceMsg(ForwardReferenceExtendsOverDefinitionID) {
         |"""
 }
 
-class ExpectedTokenButFound(expected: Token, found: Token)(using Context)
+class ExpectedTokenButFound(expected: Token, found: Token, prefix: String = "")(using Context)
 extends SyntaxMsg(ExpectedTokenButFoundID) {
 
   private def foundText = Tokens.showToken(found)
@@ -1199,7 +1181,7 @@ extends SyntaxMsg(ExpectedTokenButFoundID) {
     val expectedText =
       if (Tokens.isIdentifier(expected)) "an identifier"
       else Tokens.showToken(expected)
-    i"""${expectedText} expected, but ${foundText} found"""
+    i"""$prefix$expectedText expected, but $foundText found"""
 
   def explain(using Context) =
     if (Tokens.isIdentifier(expected) && Tokens.isKeyword(found))
@@ -1395,7 +1377,8 @@ class ConstrProxyShadows(proxy: TermRef, shadowed: Type, shadowedIsApply: Boolea
        |or use a full prefix for ${shadowed.termSymbol.name} if you mean the latter."""
 end ConstrProxyShadows
 
-class AmbiguousReference(name: Name, newPrec: BindingPrec, prevPrec: BindingPrec, prevCtx: Context)(using Context)
+class AmbiguousReference(
+    name: Name, newPrec: BindingPrec, prevPrec: BindingPrec, prevCtx: Context, isExtension: => Boolean = false)(using Context)
   extends ReferenceMsg(AmbiguousReferenceID), NoDisambiguation {
 
   /** A string which explains how something was bound; Depending on `prec` this is either
@@ -1417,10 +1400,17 @@ class AmbiguousReference(name: Name, newPrec: BindingPrec, prevPrec: BindingPrec
       i"""$howVisible$qualifier in ${whereFound.owner}"""
   }
 
+  def importHint =
+    if (newPrec == BindingPrec.NamedImport || newPrec == BindingPrec.WildImport)
+        && prevPrec == newPrec
+        && isExtension
+    then i"\n\n Hint: This error may arise if extension method `$name` is called as a normal method."
+    else ""
+
   def msg(using Context) =
     i"""|Reference to $name is ambiguous.
         |It is both ${bindingString(newPrec, ctx)}
-        |and ${bindingString(prevPrec, prevCtx, " subsequently")}"""
+        |and ${bindingString(prevPrec, prevCtx, " subsequently")}$importHint"""
 
   def explain(using Context) =
     val precedent =
@@ -1678,10 +1668,15 @@ class CannotExtendAnyVal(sym: Symbol)(using Context)
   extends SyntaxMsg(CannotExtendAnyValID) {
   def msg(using Context) = i"""$sym cannot extend ${hl("AnyVal")}"""
   def explain(using Context) =
-    i"""Only classes (not traits) are allowed to extend ${hl("AnyVal")}, but traits may extend
-        |${hl("Any")} to become ${Green("\"universal traits\"")} which may only have ${hl("def")} members.
-        |Universal traits can be mixed into classes that extend ${hl("AnyVal")}.
-        |"""
+    if sym.is(Trait) then
+      i"""Only classes (not traits) are allowed to extend ${hl("AnyVal")}, but traits may extend
+          |${hl("Any")} to become ${Green("\"universal traits\"")} which may only have ${hl("def")} members.
+          |Universal traits can be mixed into classes that extend ${hl("AnyVal")}.
+          |"""
+    else if sym.is(Module) then
+      i"""Only classes (not objects) are allowed to extend ${hl("AnyVal")}.
+          |"""
+    else ""
 }
 
 class CannotExtendJavaEnum(sym: Symbol)(using Context)
@@ -1704,7 +1699,7 @@ class JavaEnumParentArgs(parent: Type)(using Context)
 
 class CannotHaveSameNameAs(sym: Symbol, cls: Symbol, reason: CannotHaveSameNameAs.Reason)(using Context)
   extends NamingMsg(CannotHaveSameNameAsID) {
-  import CannotHaveSameNameAs._
+  import CannotHaveSameNameAs.*
   def reasonMessage(using Context): String = reason match {
     case CannotBeOverridden => "class definitions cannot be overridden"
     case DefinedInSelf(self) =>
@@ -1798,10 +1793,20 @@ class NotAPath(tp: Type, usage: String)(using Context) extends TypeMsg(NotAPathI
         | - a reference to `this`, or
         | - a selection of an immutable path with an immutable value."""
 
-class WrongNumberOfParameters(expected: Int)(using Context)
+class WrongNumberOfParameters(tree: untpd.Tree, foundCount: Int, pt: Type, expectedCount: Int)(using Context)
   extends SyntaxMsg(WrongNumberOfParametersID) {
-  def msg(using Context) = s"Wrong number of parameters, expected: $expected"
-  def explain(using Context) = ""
+  def msg(using Context) = s"Wrong number of parameters, expected: $expectedCount"
+  def explain(using Context) =
+    val ending = if foundCount == 1 then "" else "s"
+    i"""The function literal
+       |
+       |    $tree
+       |
+       |has $foundCount parameter$ending. But the expected type
+       |
+       |    $pt
+       |
+       |requires a function with $expectedCount parameters."""
 }
 
 class DuplicatePrivateProtectedQualifier()(using Context)
@@ -2263,7 +2268,7 @@ extends NamingMsg(DoubleDefinitionID) {
     def erasedType = if ctx.erasedTypes then i" ${decl.info}" else ""
     def details(using Context): String =
       if (decl.isRealMethod && previousDecl.isRealMethod) {
-        import Signature.MatchDegree._
+        import Signature.MatchDegree.*
 
         // compare the signatures when both symbols represent methods
         decl.signature.matchDegree(previousDecl.signature) match {
@@ -2350,7 +2355,7 @@ class ClassCannotExtendEnum(cls: Symbol, parent: Symbol)(using Context) extends 
   def explain(using Context) = ""
 }
 
-class NotAnExtractor(tree: untpd.Tree)(using Context) extends SyntaxMsg(NotAnExtractorID) {
+class NotAnExtractor(tree: untpd.Tree)(using Context) extends PatternMatchMsg(NotAnExtractorID) {
   def msg(using Context) = i"$tree cannot be used as an extractor in a pattern because it lacks an unapply or unapplySeq method"
   def explain(using Context) =
     i"""|An ${hl("unapply")} method should be defined in an ${hl("object")} as follow:
@@ -2363,6 +2368,24 @@ class NotAnExtractor(tree: untpd.Tree)(using Context) extends SyntaxMsg(NotAnExt
         |This mechanism is used for instance in pattern ${hl("case List(x1, ..., xn)")}"""
 }
 
+class ExtractorNotFound(val name: Name)(using Context) extends NotFoundMsg(ExtractorNotFoundID):
+  def msg(using Context) = i"no pattern match extractor named $name was found"
+  def explain(using Context) =
+    i"""An application $name(...) in a pattern can refer to an extractor
+       |which defines an unapply or unapplySeq method. Example:
+       |
+       |  object split:
+       |    def unapply(x: String) =
+       |      val (leading, trailing) = x.splitAt(x.length / 2)
+       |      Some((leading, trailing))
+       |
+       |  val split(fst, snd) = "HiHo"
+       |
+       |The extractor pattern `split(fst, snd)` defines `fst` as the first half "Hi" and
+       |`snd` as the second half "Ho" of the right hand side "HiHo". Case classes and
+       |enum cases implicitly define extractors with the name of the class or enum case.
+       |Here, no extractor named $name was found, so the pattern could not be typed."""
+
 class MemberWithSameNameAsStatic()(using Context)
   extends SyntaxMsg(MemberWithSameNameAsStaticID) {
   def msg(using Context) = i"Companion classes cannot define members with same name as a ${hl("@static")} member"
@@ -2372,10 +2395,20 @@ class MemberWithSameNameAsStatic()(using Context)
 class PureExpressionInStatementPosition(stat: untpd.Tree, val exprOwner: Symbol)(using Context)
   extends Message(PureExpressionInStatementPositionID) {
   def kind = MessageKind.PotentialIssue
-  def msg(using Context) = "A pure expression does nothing in statement position; you may be omitting necessary parentheses"
+  def msg(using Context) = "A pure expression does nothing in statement position"
   def explain(using Context) =
     i"""The pure expression $stat doesn't have any side effect and its result is not assigned elsewhere.
         |It can be removed without changing the semantics of the program. This may indicate an error."""
+}
+
+class PureUnitExpression(stat: untpd.Tree, tpe: Type)(using Context)
+  extends Message(PureUnitExpressionID) {
+  def kind = MessageKind.PotentialIssue
+  def msg(using Context) = i"Discarded non-Unit value of type ${tpe.widen}. You may want to use `()`."
+  def explain(using Context) =
+    i"""As this expression is not of type Unit, it is desugared into `{ $stat; () }`.
+       |Here the `$stat` expression is a pure statement that can be discarded.
+       |Therefore the expression is effectively equivalent to `()`."""
 }
 
 class UnqualifiedCallToAnyRefMethod(stat: untpd.Tree, method: Symbol)(using Context)
@@ -2615,7 +2648,7 @@ class ExtensionCanOnlyHaveDefs(mdef: untpd.Tree)(using Context)
         |"""
 }
 
-class UnexpectedPatternForSummonFrom(tree: Tree[_])(using Context)
+class UnexpectedPatternForSummonFrom(tree: Tree[?])(using Context)
   extends SyntaxMsg(UnexpectedPatternForSummonFromID) {
   def msg(using Context) = i"Unexpected pattern for summonFrom. Expected ${hl("`x: T`")} or ${hl("`_`")}"
   def explain(using Context) =
@@ -2976,9 +3009,26 @@ extends ReferenceMsg(CannotBeAccessedID):
         i"${if (sym.owner == pre.typeSymbol) sym.show else sym.showLocated} cannot"
       case _ =>
         i"none of the overloaded alternatives named $name can"
-    val where = if (ctx.owner.exists) s" from ${ctx.owner.enclosingClass}" else ""
+    val where = if (ctx.owner.exists) i" from ${ctx.owner.enclosingClass}" else ""
     val whyNot = new StringBuffer
-    alts.foreach(_.isAccessibleFrom(pre, superAccess, whyNot))
+    for alt <- alts do
+      val cls = alt.owner.enclosingSubClass
+      val owner = if cls.exists then cls else alt.owner
+      val location: String =
+        if alt.is(Protected) then
+          if alt.privateWithin.exists && alt.privateWithin != owner then
+            if owner.is(Final) then alt.privateWithin.showLocated
+            else alt.privateWithin.showLocated + ", or " + owner.showLocated + " or one of its subclasses"
+          else
+            if owner.is(Final) then owner.showLocated
+            else owner.showLocated + " or one of its subclasses"
+        else
+          alt.privateWithin.orElse(owner).showLocated
+      val accessMod = if alt.is(Protected) then "protected" else "private"
+      val within = if alt.privateWithin.exists then i"[${alt.privateWithin.name}]"
+        else ""
+      whyNot.append(i"""
+          |  $accessMod$within $alt can only be accessed from $location.""")
     i"$whatCanNot be accessed as a member of $pre$where.$whyNot"
   def explain(using Context) = ""
 

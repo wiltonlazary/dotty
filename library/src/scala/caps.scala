@@ -4,12 +4,18 @@ import annotation.experimental
 
 @experimental object caps:
 
+  class Cap // should be @erased
+
   /** The universal capture reference (deprecated) */
   @deprecated("Use `cap` instead")
-  val `*`: Any = ()
+  val `*`: Cap = cap
 
   /** The universal capture reference */
-  val cap: Any = ()
+  val cap: Cap = Cap()
+
+  given Cap = cap
+
+  def capIn(scope: String): Cap = cap
 
   object unsafe:
 

@@ -1,20 +1,21 @@
 package dotty.tools.dotc
 package util
 
-import ast.Trees._
+import ast.Trees.*
 import ast.tpd
 import core.Constants.Constant
-import core.Contexts._
+import core.Contexts.*
 import core.Denotations.{SingleDenotation, Denotation}
 import core.Flags
 import core.NameOps.isUnapplyName
-import core.Names._
+import core.Names.*
 import core.NameKinds
-import core.Types._
+import core.Types.*
 import core.Symbols.NoSymbol
 import interactive.Interactive
+import transform.SymUtils.isLocalToBlock
 import util.Spans.Span
-import reporting._
+import reporting.*
 
 
 object Signatures {
@@ -178,7 +179,8 @@ object Signatures {
         (alternativeIndex, alternatives)
       case _ =>
         val funSymbol = fun.symbol
-        val alternatives = funSymbol.owner.info.member(funSymbol.name).alternatives
+        val alternatives = if funSymbol.isLocalToBlock then List(funSymbol.denot) else
+          funSymbol.owner.info.member(funSymbol.name).alternatives
         val alternativeIndex = alternatives.map(_.symbol).indexOf(funSymbol) max 0
         (alternativeIndex, alternatives)
 

@@ -2,23 +2,23 @@ package dotty.tools
 package dotc
 package typer
 
-import core._
-import ast._
-import Contexts._, Types._, Flags._, Symbols._
-import ProtoTypes._
+import core.*
+import ast.*
+import Contexts.*, Types.*, Flags.*, Symbols.*
+import ProtoTypes.*
 import NameKinds.UniqueName
-import util.Spans._
+import util.Spans.*
 import util.{Stats, SimpleIdentityMap, SimpleIdentitySet, SrcPos}
-import Decorators._
+import Decorators.*
 import config.Printers.{gadts, typr}
 import annotation.tailrec
-import reporting._
+import reporting.*
 import collection.mutable
 import scala.annotation.internal.sharable
 
 object Inferencing {
 
-  import tpd._
+  import tpd.*
 
   /** Is type fully defined, meaning the type does not contain wildcard types
    *  or uninstantiated type variables. As a side effect, this will minimize
@@ -317,7 +317,7 @@ object Inferencing {
   def inferTypeParams(tree: Tree, pt: Type)(using Context): Tree = tree.tpe match
     case tl: TypeLambda =>
       val (tl1, tvars) = constrained(tl, tree)
-      var tree1 = AppliedTypeTree(tree.withType(tl1), tvars)
+      val tree1 = AppliedTypeTree(tree.withType(tl1), tvars.map(_.wrapInTypeTree(tree)))
       tree1.tpe <:< pt
       if isFullyDefined(tree1.tpe, force = ForceDegree.failBottom) then
         tree1
@@ -537,7 +537,7 @@ object Inferencing {
       }
       if tparams.isEmpty then tp else tp.derivedAppliedType(tycon, args1)
     case tp: AndOrType => tp.derivedAndOrType(captureWildcards(tp.tp1), captureWildcards(tp.tp2))
-    case tp: RefinedType => tp.derivedRefinedType(captureWildcards(tp.parent), tp.refinedName, tp.refinedInfo)
+    case tp: RefinedType => tp.derivedRefinedType(parent = captureWildcards(tp.parent))
     case tp: RecType => tp.derivedRecType(captureWildcards(tp.parent))
     case tp: LazyRef => captureWildcards(tp.ref)
     case tp: AnnotatedType => tp.derivedAnnotatedType(captureWildcards(tp.parent), tp.annot)
@@ -550,8 +550,8 @@ object Inferencing {
 }
 
 trait Inferencing { this: Typer =>
-  import Inferencing._
-  import tpd._
+  import Inferencing.*
+  import tpd.*
 
   /** Interpolate undetermined type variables in the widened type of this tree.
    *  @param tree    the tree whose type is interpolated

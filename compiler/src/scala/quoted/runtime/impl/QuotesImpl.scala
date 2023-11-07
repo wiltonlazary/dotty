@@ -7,20 +7,20 @@ import dotty.tools.dotc
 import dotty.tools.dotc.ast.tpd
 import dotty.tools.dotc.ast.untpd
 import dotty.tools.dotc.core.Annotations
-import dotty.tools.dotc.core.Contexts._
-import dotty.tools.dotc.core.Decorators._
+import dotty.tools.dotc.core.Contexts.*
+import dotty.tools.dotc.core.Decorators.*
 import dotty.tools.dotc.core.NameKinds
-import dotty.tools.dotc.core.NameOps._
-import dotty.tools.dotc.core.StdNames._
+import dotty.tools.dotc.core.NameOps.*
+import dotty.tools.dotc.core.StdNames.*
 import dotty.tools.dotc.core.Types
 import dotty.tools.dotc.NoCompilationUnit
 import dotty.tools.dotc.quoted.MacroExpansion
 import dotty.tools.dotc.quoted.PickledQuotes
 import dotty.tools.dotc.quoted.QuotePatterns
-import dotty.tools.dotc.quoted.reflect._
+import dotty.tools.dotc.quoted.reflect.*
 
 import scala.quoted.runtime.{QuoteUnpickler, QuoteMatching}
-import scala.quoted.runtime.impl.printers._
+import scala.quoted.runtime.impl.printers.*
 
 import scala.reflect.TypeTest
 
@@ -1779,7 +1779,7 @@ class QuotesImpl private (using val ctx: Context) extends Quotes, QuoteUnpickler
 
         def show(using printer: Printer[TypeRepr]): String = printer.show(self)
 
-        def seal: scala.quoted.Type[_] = self.asType
+        def seal: scala.quoted.Type[?] = self.asType
 
         def asType: scala.quoted.Type[?] =
           new TypeImpl(Inferred(self), SpliceScope.getCurrent)
@@ -1790,6 +1790,7 @@ class QuotesImpl private (using val ctx: Context) extends Quotes, QuoteUnpickler
         def widenTermRefByName: TypeRepr = self.widenTermRefExpr
         def widenByName: TypeRepr = self.widenExpr
         def dealias: TypeRepr = self.dealias
+        def dealiasKeepOpaques: TypeRepr = self.dealiasKeepOpaques
         def simplified: TypeRepr = self.simplified
         def classSymbol: Option[Symbol] =
           if self.classSymbol.exists then Some(self.classSymbol.asClass)
@@ -2246,6 +2247,8 @@ class QuotesImpl private (using val ctx: Context) extends Quotes, QuoteUnpickler
       extension (self: TypeLambda)
         def param(idx: Int): TypeRepr = self.newParamRef(idx)
         def paramBounds: List[TypeBounds] = self.paramInfos
+        def paramVariances: List[Flags] =
+          self.typeParams.map(_.paramVariance)
       end extension
     end TypeLambdaMethods
 
@@ -2754,6 +2757,7 @@ class QuotesImpl private (using val ctx: Context) extends Quotes, QuoteUnpickler
           }
 
         def isTypeParam: Boolean = self.isTypeParam
+        def paramVariance: Flags = self.paramVariance
         def signature: Signature = self.signature
         def moduleClass: Symbol = self.denot.moduleClass
         def companionClass: Symbol = self.denot.companionClass
@@ -2912,9 +2916,10 @@ class QuotesImpl private (using val ctx: Context) extends Quotes, QuoteUnpickler
       def Transparent: Flags = dotc.core.Flags.Transparent
 
       // Keep: aligned with Quotes's `newMethod` doc
-      private[QuotesImpl] def validMethodFlags: Flags = Private | Protected | Override | Deferred | Final | Method | Implicit | Given | Local | AbsOverride | JavaStatic // Flags that could be allowed: Synthetic | ExtensionMethod | Exported | Erased | Infix | Invisible
+      private[QuotesImpl] def validMethodFlags: Flags = Private | Protected | Override | Deferred | Final | Method | Implicit | Given | Local | AbsOverride | JavaStatic | Synthetic | Artifact // Flags that could be allowed: Synthetic | ExtensionMethod | Exported | Erased | Infix | Invisible
       // Keep: aligned with Quotes's `newVal` doc
-      private[QuotesImpl] def validValFlags: Flags = Private | Protected | Override | Deferred | Final | Param | Implicit | Lazy | Mutable | Local | ParamAccessor | Module | Package | Case | CaseAccessor | Given | Enum | AbsOverride | JavaStatic // Flags that could be added: Synthetic | Erased | Invisible
+      private[QuotesImpl] def validValFlags: Flags = Private | Protected | Override | Deferred | Final | Param | Implicit | Lazy | Mutable | Local | ParamAccessor | Module | Package | Case | CaseAccessor | Given | Enum | AbsOverride | JavaStatic | Synthetic | Artifact // Flags that could be added: Synthetic | Erased | Invisible
+
       // Keep: aligned with Quotes's `newBind` doc
       private[QuotesImpl] def validBindFlags: Flags = Case // Flags that could be allowed: Implicit | Given | Erased
     end Flags

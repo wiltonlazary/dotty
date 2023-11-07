@@ -90,32 +90,33 @@ object CaseKeywordCompletion:
             new Parents(NoType, definitions)
       case sel => new Parents(sel.tpe, definitions)
 
-    val selectorSym = parents.selector.typeSymbol
+    val selectorSym = parents.selector.widen.metalsDealias.typeSymbol
 
     // Special handle case when selector is a tuple or `FunctionN`.
     if definitions.isTupleClass(selectorSym) || definitions.isFunctionClass(
         selectorSym
       )
     then
-      val label =
-        if patternOnly.isEmpty then s"case ${parents.selector.show} =>"
-        else parents.selector.show
-      List(
-        CompletionValue.CaseKeyword(
-          selectorSym,
-          label,
-          Some(
-            if patternOnly.isEmpty then
+      if patternOnly.isEmpty then
+        val selectorTpe = parents.selector.show
+        val tpeLabel =
+          if !selectorTpe.contains("x$1") then selectorTpe
+          else selector.symbol.info.show
+        val label = s"case ${tpeLabel} =>"
+        List(
+          CompletionValue.CaseKeyword(
+            selectorSym,
+            label,
+            Some(
               if config.isCompletionSnippetsEnabled() then "case ($0) =>"
               else "case () =>"
-            else if config.isCompletionSnippetsEnabled() then "($0)"
-            else "()"
-          ),
-          Nil,
-          range = Some(completionPos.toEditRange),
-          command = config.parameterHintsCommand().asScala
+            ),
+            Nil,
+            range = Some(completionPos.toEditRange),
+            command = config.parameterHintsCommand().asScala,
+          )
         )
-      )
+      else Nil
     else
       val result = ListBuffer.empty[SymbolImport]
       val isVisited = mutable.Set.empty[Symbol]
@@ -153,7 +154,9 @@ object CaseKeywordCompletion:
           if isValid(ts) then visit(autoImportsGen.inferSymbolImport(ts))
         )
       // Step 2: walk through known subclasses of sealed types.
-      val sealedDescs = subclassesForType(parents.selector.widen.bounds.hi)
+      val sealedDescs = subclassesForType(
+        parents.selector.widen.metalsDealias.bounds.hi
+      )
       sealedDescs.foreach { sym =>
         val symbolImport = autoImportsGen.inferSymbolImport(sym)
         visit(symbolImport)
@@ -241,7 +244,7 @@ object CaseKeywordCompletion:
       completionPos,
       clientSupportsSnippets
     )
-    val tpe = selector.tpe.widen.bounds.hi match
+    val tpe = selector.tpe.widen.metalsDealias.bounds.hi match
       case tr @ TypeRef(_, _) => tr.underlying
       case t => t
 

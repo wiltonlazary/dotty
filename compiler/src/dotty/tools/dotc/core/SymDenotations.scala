@@ -2,16 +2,16 @@ package dotty.tools
 package dotc
 package core
 
-import Periods._, Contexts._, Symbols._, Denotations._, Names._, NameOps._, Annotations._
-import Types._, Flags._, Decorators._, DenotTransformers._, StdNames._, Scopes._
-import NameOps._, NameKinds._
+import Periods.*, Contexts.*, Symbols.*, Denotations.*, Names.*, NameOps.*, Annotations.*
+import Types.*, Flags.*, Decorators.*, DenotTransformers.*, StdNames.*, Scopes.*
+import NameOps.*, NameKinds.*
 import Phases.{Phase, typerPhase, unfusedPhases}
 import Constants.Constant
 import TypeApplications.TypeParamInfo
 import Scopes.Scope
 import dotty.tools.io.AbstractFile
-import Decorators._
-import ast._
+import Decorators.*
+import ast.*
 import ast.Trees.{LambdaTypeTree, TypeBoundsTree}
 import Trees.Literal
 import Variances.Variance
@@ -21,12 +21,13 @@ import util.Stats
 import java.util.WeakHashMap
 import scala.util.control.NonFatal
 import config.Config
-import reporting._
+import reporting.*
 import collection.mutable
-import transform.TypeUtils._
-import cc.{CapturingType, derivedCapturingType, Setup, EventuallyCapturingType, isEventuallyCapturingType}
+import transform.TypeUtils.*
+import cc.{CapturingType, derivedCapturingType}
 
 import scala.annotation.internal.sharable
+import scala.compiletime.uninitialized
 
 object SymDenotations {
 
@@ -672,6 +673,10 @@ object SymDenotations {
     def isPackageObject(using Context): Boolean =
       name.isPackageObjectName && owner.is(Package) && this.is(Module)
 
+    /** Is this symbol a package object containing top-level definitions? */
+    def isTopLevelDefinitionsObject(using Context): Boolean =
+      name.isTopLevelPackageObjectName && owner.is(Package) && this.is(Module)
+
     /** Is this symbol a toplevel definition in a package object? */
     def isWrappedToplevelDef(using Context): Boolean =
       !isConstructor && owner.isPackageObject
@@ -864,6 +869,17 @@ object SymDenotations {
     final def isNullableClassAfterErasure(using Context): Boolean =
       isClass && !isValueClass && !is(ModuleClass) && symbol != defn.NothingClass
 
+    /** Is `pre` the same as C.this, where C is exactly the owner of this symbol,
+     *  or, if this symbol is protected, a subclass of the owner?
+     */
+    def isAccessPrivilegedThisType(pre: Type)(using Context): Boolean = pre match
+      case pre: ThisType =>
+        (pre.cls eq owner) || this.is(Protected) && pre.cls.derivesFrom(owner)
+      case pre: TermRef =>
+        pre.symbol.moduleClass == owner
+      case _ =>
+        false
+
     /** Is this definition accessible as a member of tree with type `pre`?
      *  @param pre          The type of the tree from which the selection is made
      *  @param superAccess  Access is via super
@@ -873,7 +889,7 @@ object SymDenotations {
      *  As a side effect, drop Local flags of members that are not accessed via the ThisType
      *  of their owner.
      */
-    final def isAccessibleFrom(pre: Type, superAccess: Boolean = false, whyNot: StringBuffer | Null = null)(using Context): Boolean = {
+    final def isAccessibleFrom(pre: Type, superAccess: Boolean = false)(using Context): Boolean = {
 
       /** Are we inside definition of `boundary`?
        *  If this symbol is Java defined, package structure is interpreted to be flat.
@@ -888,40 +904,15 @@ object SymDenotations {
         (linked ne NoSymbol) && accessWithin(linked)
       }
 
-      /** Is `pre` the same as C.thisThis, where C is exactly the owner of this symbol,
-       *  or, if this symbol is protected, a subclass of the owner?
-       */
-      def isCorrectThisType(pre: Type): Boolean = pre match {
-        case pre: ThisType =>
-          (pre.cls eq owner) || this.is(Protected) && pre.cls.derivesFrom(owner)
-        case pre: TermRef =>
-          pre.symbol.moduleClass == owner
-        case _ =>
-          false
-      }
-
       /** Is protected access to target symbol permitted? */
       def isProtectedAccessOK: Boolean =
-        inline def fail(str: String): false =
-          if whyNot != null then whyNot.nn.append(str)
-          false
         val cls = owner.enclosingSubClass
         if !cls.exists then
-          if pre.termSymbol.isPackageObject && accessWithin(pre.termSymbol.owner) then
-            true
-          else
-            val encl = if ctx.owner.isConstructor then ctx.owner.enclosingClass.owner.enclosingClass else ctx.owner.enclosingClass
-            fail(i"""
-                 | Access to protected $this not permitted because enclosing ${encl.showLocated}
-                 | is not a subclass of ${owner.showLocated} where target is defined""")
-        else if isType || pre.derivesFrom(cls) || isConstructor || owner.is(ModuleClass) then
+          pre.termSymbol.isPackageObject && accessWithin(pre.termSymbol.owner)
+        else
           // allow accesses to types from arbitrary subclasses fixes #4737
           // don't perform this check for static members
-          true
-        else
-          fail(i"""
-               | Access to protected ${symbol.show} not permitted because prefix type ${pre.widen.show}
-               | does not conform to ${cls.showLocated} where the access takes place""")
+          isType || pre.derivesFrom(cls) || isConstructor || owner.is(ModuleClass)
       end isProtectedAccessOK
 
       if pre eq NoPrefix then true
@@ -933,7 +924,7 @@ object SymDenotations {
         || boundary.isRoot
         || (accessWithin(boundary) || accessWithinLinked(boundary)) &&
              (  !this.is(Local)
-             || isCorrectThisType(pre)
+             || isAccessPrivilegedThisType(pre)
              || canBeLocal(name, flags)
                 && {
                   resetFlag(Local)
@@ -1030,7 +1021,7 @@ object SymDenotations {
 
     /** Is this a Scala 2 macro defined */
     final def isScala2MacroInScala3(using Context): Boolean =
-      is(Macro, butNot = Inline) && is(Erased)
+      is(Macro, butNot = Inline) && flagsUNSAFE.is(Erased) // flag is set initially for macros - we check if it's a scala 2 macro before completing the type constructor so do not force the info to check the flag
       // Consider the macros of StringContext as plain Scala 2 macros when
       // compiling the standard library with Dotty.
       // This should be removed on Scala 3.x
@@ -2441,7 +2432,7 @@ object SymDenotations {
     initPrivateWithin: Symbol)
     extends ClassDenotation(symbol, ownerIfExists, name, initFlags, initInfo, initPrivateWithin) {
 
-    private var packageObjsCache: List[ClassDenotation] = _
+    private var packageObjsCache: List[ClassDenotation] = uninitialized
     private var packageObjsRunId: RunId = NoRunId
     private var ambiguityWarningIssued: Boolean = false
 

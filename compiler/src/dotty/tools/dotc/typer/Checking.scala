@@ -2,18 +2,18 @@ package dotty.tools
 package dotc
 package typer
 
-import core._
-import ast._
-import Contexts._
-import Types._
-import Flags._
-import Names._
-import StdNames._
-import Symbols._
-import Trees._
-import ProtoTypes._
-import Scopes._
-import CheckRealizable._
+import core.*
+import ast.*
+import Contexts.*
+import Types.*
+import Flags.*
+import Names.*
+import StdNames.*
+import Symbols.*
+import Trees.*
+import ProtoTypes.*
+import Scopes.*
+import CheckRealizable.*
 import ErrorReporting.errorTree
 import util.Spans.Span
 import Phases.refchecksPhase
@@ -23,28 +23,29 @@ import util.SrcPos
 import util.Spans.Span
 import rewrites.Rewrites.patch
 import inlines.Inlines
-import transform.SymUtils._
-import transform.ValueClasses._
-import Decorators._
+import transform.SymUtils.*
+import transform.ValueClasses.*
+import Decorators.*
 import ErrorReporting.{err, errorType}
 import config.Printers.{typr, patmatch}
 import NameKinds.DefaultGetterName
-import NameOps._
+import NameOps.*
 import SymDenotations.{NoCompleter, NoDenotation}
 import Applications.unapplyArgs
 import Inferencing.isFullyDefined
 import transform.patmat.SpaceEngine.{isIrrefutable, isIrrefutableQuotePattern}
 import config.Feature
 import config.Feature.sourceVersion
-import config.SourceVersion._
+import config.SourceVersion.*
 import printing.Formatting.hlAsKeyword
 import transform.TypeUtils.*
+import cc.isCaptureChecking
 
 import collection.mutable
-import reporting._
+import reporting.*
 
 object Checking {
-  import tpd._
+  import tpd.*
 
   /** Add further information for error messages involving applied types if the
    *  type is inferred:
@@ -67,7 +68,7 @@ object Checking {
    */
   def checkBounds(args: List[tpd.Tree], boundss: List[TypeBounds],
     instantiate: (Type, List[Type]) => Type, app: Type = NoType, tpt: Tree = EmptyTree)(using Context): Unit =
-    if ctx.phase != Phases.checkCapturesPhase then
+    if !isCaptureChecking then
       args.lazyZip(boundss).foreach { (arg, bound) =>
         if !bound.isLambdaSub && !arg.tpe.hasSimpleKind then
           errorTree(arg,
@@ -152,7 +153,7 @@ object Checking {
             // if we attempt to check bounds of F-bounded mutually recursive Java interfaces.
             // Do check all bounds in Scala units and those bounds in Java units that
             // occur in applications of Scala type constructors.
-            && !(ctx.phase == Phases.checkCapturesPhase && !tycon.typeSymbol.is(CaptureChecked))
+            && !isCaptureChecking || tycon.typeSymbol.is(CaptureChecked)
             // Don't check bounds when capture checking type constructors that were not
             // themselves capture checked. Since the type constructor could not foresee
             // possible capture sets, it's better to be lenient for backwards compatibility.
@@ -518,11 +519,11 @@ object Checking {
         // but they can never be one of ClassOnlyFlags
     if !sym.isClass && sym.isOneOf(ClassOnlyFlags) then
       val illegal = sym.flags & ClassOnlyFlags
-      if sym.is(TypeParam) && illegal == Sealed && Feature.ccEnabled && cc.allowUniversalInBoxed then
-        if !sym.owner.is(Method) then
-          fail(em"only method type parameters can be sealed")
-      else
-        fail(em"only classes can be ${illegal.flagsString}")
+      if sym.is(TypeParam)
+          && illegal == Sealed
+          && Feature.ccEnabled && cc.ccConfig.allowUniversalInBoxed
+      then () // OK
+      else fail(em"only classes can be ${illegal.flagsString}")
     if (sym.is(AbsOverride) && !sym.owner.is(Trait))
       fail(AbstractOverrideOnlyInTraits(sym))
     if sym.is(Trait) then
@@ -716,6 +717,8 @@ object Checking {
     if (isDerivedValueClass(clazz)) {
       if (clazz.is(Trait))
         report.error(CannotExtendAnyVal(clazz), clazz.srcPos)
+      if clazz.is(Module) then
+        report.error(CannotExtendAnyVal(clazz), clazz.srcPos)
       if (clazz.is(Abstract))
         report.error(ValueClassesMayNotBeAbstract(clazz), clazz.srcPos)
       if (!clazz.isStatic)
@@ -821,11 +824,36 @@ object Checking {
           else Feature.checkExperimentalFeature("features", imp.srcPos)
         case _ =>
   end checkExperimentalImports
+
+  /** Checks that PolyFunction only have valid refinements.
+   *
+   *  It only supports `apply` methods with one parameter list and optional type arguments.
+   */
+  def checkPolyFunctionType(tree: Tree)(using Context): Unit = new TreeTraverser {
+    def traverse(tree: Tree)(using Context): Unit = tree match
+      case tree: RefinedTypeTree if tree.tpe.derivesFrom(defn.PolyFunctionClass) =>
+        if tree.refinements.isEmpty then
+          reportNoRefinements(tree.srcPos)
+        tree.refinements.foreach {
+          case refinement: DefDef if refinement.name != nme.apply =>
+            report.error("PolyFunction only supports apply method refinements", refinement.srcPos)
+          case refinement: DefDef if !defn.PolyFunctionOf.isValidPolyFunctionInfo(refinement.tpe.widen) =>
+            report.error("Implementation restriction: PolyFunction apply must have exactly one parameter list and optionally type arguments. No by-name nor varags are allowed.", refinement.srcPos)
+          case _ =>
+        }
+      case _: RefTree if tree.symbol == defn.PolyFunctionClass =>
+        reportNoRefinements(tree.srcPos)
+      case _ =>
+        traverseChildren(tree)
+
+    def reportNoRefinements(pos: SrcPos) =
+      report.error("PolyFunction subtypes must refine the apply method", pos)
+  }.traverse(tree)
 }
 
 trait Checking {
 
-  import tpd._
+  import tpd.*
 
   def checkNonCyclic(sym: Symbol, info: TypeBounds, reportErrors: Boolean)(using Context): Type =
     Checking.checkNonCyclic(sym, info, reportErrors)
@@ -856,7 +884,7 @@ trait Checking {
       case NonConforming, RefutableExtractor
 
     def fail(pat: Tree, pt: Type, reason: Reason): Boolean = {
-      import Reason._
+      import Reason.*
       val message = reason match
         case NonConforming =>
           var reportedPt = pt.dropAnnot(defn.UncheckedAnnot)
@@ -1097,7 +1125,7 @@ trait Checking {
       case tp @ AppliedType(tycon, args) =>
         tp.derivedAppliedType(tycon, args.mapConserve(checkGoodBounds))
       case tp: RefinedType =>
-        tp.derivedRefinedType(tp.parent, tp.refinedName, checkGoodBounds(tp.refinedInfo))
+        tp.derivedRefinedType(refinedInfo = checkGoodBounds(tp.refinedInfo))
       case _ =>
         tp
     }
@@ -1534,7 +1562,7 @@ trait Checking {
           && !qualType.member(sel.name).exists
           && !qualType.member(sel.name.toTypeName).exists
       then
-        report.error(NotAMember(qualType, sel.name, "value"), sel.imported.srcPos)
+        report.error(NotAMember(qualType, sel.name, "value", WildcardType), sel.imported.srcPos)
       if sel.isUnimport then
         if originals.contains(sel.name) then
           report.error(UnimportedAndImported(sel.name, targets.contains(sel.name)), sel.imported.srcPos)
@@ -1551,7 +1579,7 @@ trait Checking {
 }
 
 trait ReChecking extends Checking {
-  import tpd._
+  import tpd.*
   override def checkEnumParent(cls: Symbol, firstParent: Symbol)(using Context): Unit = ()
   override def checkEnum(cdef: untpd.TypeDef, cls: Symbol, firstParent: Symbol)(using Context): Unit = ()
   override def checkRefsLegal(tree: tpd.Tree, badOwner: Symbol, allowed: (Name, Symbol) => Boolean, where: String)(using Context): Unit = ()
@@ -1567,7 +1595,7 @@ trait ReChecking extends Checking {
 }
 
 trait NoChecking extends ReChecking {
-  import tpd._
+  import tpd.*
   override def checkNonCyclic(sym: Symbol, info: TypeBounds, reportErrors: Boolean)(using Context): Type = info
   override def checkNonCyclicInherited(joint: Type, parents: List[Type], decls: Scope, pos: SrcPos)(using Context): Unit = ()
   override def checkStable(tp: Type, pos: SrcPos, kind: String)(using Context): Unit = ()

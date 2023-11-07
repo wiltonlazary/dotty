@@ -2,15 +2,15 @@ package dotty.tools
 package dotc
 package ast
 
-import core._
-import Types._, Contexts._, Constants._, Names._, Flags._
+import core.*
+import Types.*, Contexts.*, Constants.*, Names.*, Flags.*
 import dotty.tools.dotc.typer.ProtoTypes
-import Symbols._, StdNames._, Trees._
+import Symbols.*, StdNames.*, Trees.*
 import util.{Property, SourceFile, NoSource}
 import util.Spans.Span
 import annotation.constructorOnly
 import annotation.internal.sharable
-import Decorators._
+import Decorators.*
 
 object untpd extends Trees.Instance[Untyped] with UntypedTreeInfo {
 
@@ -42,7 +42,7 @@ object untpd extends Trees.Instance[Untyped] with UntypedTreeInfo {
   /** mods object name impl */
   case class ModuleDef(name: TermName, impl: Template)(implicit @constructorOnly src: SourceFile)
     extends MemberDef {
-    type ThisTree[+T <: Untyped] <: Trees.NameTree[T] with Trees.MemberDef[T] with ModuleDef
+    type ThisTree[+T <: Untyped] <: Trees.NameTree[T] & Trees.MemberDef[T] & ModuleDef
     def withName(name: Name)(using Context): ModuleDef = cpy.ModuleDef(this)(name.toTermName, impl)
   }
 
@@ -149,7 +149,10 @@ object untpd extends Trees.Instance[Untyped] with UntypedTreeInfo {
     case Floating
   }
 
-  /** {x1, ..., xN} T   (only relevant under captureChecking) */
+  /** {x1, ..., xN} T   (only relevant under captureChecking)
+   *  Created when parsing function types so that capture set and result type
+   *  is combined in a single node.
+   */
   case class CapturesAndResult(refs: List[Tree], parent: Tree)(implicit @constructorOnly src: SourceFile) extends TypTree
 
   /** A type tree appearing somewhere in the untyped DefDef of a lambda, it will be typed using `tpFun`.
@@ -489,7 +492,7 @@ object untpd extends Trees.Instance[Untyped] with UntypedTreeInfo {
   def InferredTypeTree(tpe: Type)(using Context): TypedSplice =
     TypedSplice(new InferredTypeTree().withTypeUnchecked(tpe))
 
-  def unitLiteral(implicit src: SourceFile): Literal = Literal(Constant(()))
+  def unitLiteral(implicit src: SourceFile): Literal = Literal(Constant(())).withAttachment(SyntheticUnit, ())
 
   def ref(tp: NamedType)(using Context): Tree =
     TypedSplice(tpd.ref(tp))
@@ -511,6 +514,9 @@ object untpd extends Trees.Instance[Untyped] with UntypedTreeInfo {
 
   def captureRoot(using Context): Select =
     Select(scalaDot(nme.caps), nme.CAPTURE_ROOT)
+
+  def captureRootIn(using Context): Select =
+    Select(scalaDot(nme.caps), nme.capIn)
 
   def makeRetaining(parent: Tree, refs: List[Tree], annotName: TypeName)(using Context): Annotated =
     Annotated(parent, New(scalaAnnotationDot(annotName), List(refs)))

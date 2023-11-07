@@ -3,26 +3,28 @@ package dotc
 package core
 
 import SymDenotations.{ SymDenotation, ClassDenotation, NoDenotation, LazyType, stillValid, acceptStale, traceInvalid }
-import Contexts._
-import Names._
-import NameKinds._
-import StdNames._
+import Contexts.*
+import Names.*
+import NameKinds.*
+import StdNames.*
 import Symbols.NoSymbol
-import Symbols._
-import Types._
-import Periods._
-import Flags._
-import DenotTransformers._
-import Decorators._
-import Signature.MatchDegree._
-import printing.Texts._
+import Symbols.*
+import Types.*
+import Periods.*
+import Flags.*
+import DenotTransformers.*
+import Decorators.*
+import Signature.MatchDegree.*
+import printing.Texts.*
 import printing.Printer
 import io.AbstractFile
 import config.Config
 import config.Printers.overload
-import util.common._
+import util.common.*
 import typer.ProtoTypes.NoViewsAllowed
 import collection.mutable.ListBuffer
+
+import scala.compiletime.uninitialized
 
 /** Denotations represent the meaning of symbols and named types.
  *  The following diagram shows how the principal types of denotations
@@ -121,8 +123,8 @@ object Denotations {
     /** Map `f` over all single denotations and aggregate the results with `g`. */
     def aggregate[T](f: SingleDenotation => T, g: (T, T) => T): T
 
-    private var cachedPrefix: Type = _
-    private var cachedAsSeenFrom: AsSeenFromResult = _
+    private var cachedPrefix: Type = uninitialized
+    private var cachedAsSeenFrom: AsSeenFromResult = uninitialized
     private var validAsSeenFrom: Period = Nowhere
 
     type AsSeenFromResult <: PreDenotation
@@ -884,7 +886,6 @@ object Denotations {
     /** Install this denotation to be the result of the given denotation transformer.
      *  This is the implementation of the same-named method in SymDenotations.
      *  It's placed here because it needs access to private fields of SingleDenotation.
-     *  @pre  Can only be called in `phase.next`.
      */
     protected def installAfter(phase: DenotTransformer)(using Context): Unit = {
       val targetId = phase.next.id
@@ -892,16 +893,21 @@ object Denotations {
       else {
         val current = symbol.current
         // println(s"installing $this after $phase/${phase.id}, valid = ${current.validFor}")
-        // printPeriods(current)
+        // println(current.definedPeriodsString)
         this.validFor = Period(ctx.runId, targetId, current.validFor.lastPhaseId)
         if (current.validFor.firstPhaseId >= targetId)
           current.replaceWith(this)
+          symbol.denot
+            // Let symbol point to updated denotation
+            // Without this we can get problems when we immediately recompute the denotation
+            // at another phase since the invariant that symbol used to point to a valid
+            // denotation is lost.
         else {
           current.validFor = Period(ctx.runId, current.validFor.firstPhaseId, targetId - 1)
           insertAfter(current)
         }
+        // println(current.definedPeriodsString)
       }
-      // printPeriods(this)
     }
 
     /** Apply a transformation `f` to all denotations in this group that start at or after

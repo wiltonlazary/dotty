@@ -2,10 +2,10 @@ package dotty.tools
 package dotc
 package ast
 
-import core._
-import Types._, Names._, NameOps._, Flags._, util.Spans._, Contexts._, Constants._
+import core.*
+import Types.*, Names.*, NameOps.*, Flags.*, util.Spans.*, Contexts.*, Constants.*
 import typer.{ ConstFold, ProtoTypes }
-import SymDenotations._, Symbols._, Denotations._, StdNames._, Comments._
+import SymDenotations.*, Symbols.*, Denotations.*, StdNames.*, Comments.*
 import collection.mutable.ListBuffer
 import printing.Printer
 import printing.Texts.Text
@@ -16,7 +16,7 @@ import annotation.internal.sharable
 import annotation.unchecked.uncheckedVariance
 import annotation.constructorOnly
 import compiletime.uninitialized
-import Decorators._
+import Decorators.*
 import staging.StagingLevel.*
 
 object Trees {
@@ -31,6 +31,8 @@ object Trees {
 
   /** Property key for backquoted identifiers and definitions */
   val Backquoted: Property.StickyKey[Unit] = Property.StickyKey()
+
+  val SyntheticUnit: Property.StickyKey[Unit] = Property.StickyKey()
 
   /** Trees take a parameter indicating what the type of their `tpe` field
    *  is. Two choices: `Type` or `Untyped`.
@@ -455,7 +457,7 @@ object Trees {
         val point = span.point
         if name.toTermName == nme.ERROR then
           Span(point)
-        else if qualifier.span.start > span.start then // right associative
+        else if qualifier.span.exists && qualifier.span.start > span.point then // right associative
           val realName = name.stripModuleClassSuffix.lastPart
           Span(span.start, span.start + realName.length, point)
         else
@@ -659,7 +661,8 @@ object Trees {
    *
    *  @param  call      Info about the original call that was inlined
    *                    Until PostTyper, this is the full call, afterwards only
-   *                    a reference to the toplevel class from which the call was inlined.
+   *                    a reference to the method or the top-level class from
+   *                    which the call was inlined.
    *  @param  bindings  Bindings for proxies to be used in the inlined code
    *  @param  expansion The inlined tree, minus bindings.
    *
@@ -770,7 +773,7 @@ object Trees {
   /** A type tree that represents an existing or inferred type */
   case class TypeTree[+T <: Untyped]()(implicit @constructorOnly src: SourceFile)
     extends DenotingTree[T] with TypTree[T] {
-    type ThisTree[+T <: Untyped] = TypeTree[T]
+    type ThisTree[+T <: Untyped] <: TypeTree[T]
     override def isEmpty: Boolean = !hasType
     override def toString: String =
       s"TypeTree${if (hasType) s"[$typeOpt]" else ""}"
@@ -794,7 +797,8 @@ object Trees {
    *    - as a (result-)type of an inferred ValDef or DefDef.
    *  Every TypeVar is created as the type of one InferredTypeTree.
    */
-  class InferredTypeTree[+T <: Untyped](implicit @constructorOnly src: SourceFile) extends TypeTree[T]
+  class InferredTypeTree[+T <: Untyped](implicit @constructorOnly src: SourceFile) extends TypeTree[T]:
+    type ThisTree[+T <: Untyped] <: InferredTypeTree[T]
 
   /** ref.type */
   case class SingletonTypeTree[+T <: Untyped] private[ast] (ref: Tree[T])(implicit @constructorOnly src: SourceFile)
@@ -929,11 +933,11 @@ object Trees {
     def rhs(using Context): Tree[T] = { forceFields(); preRhs.asInstanceOf[Tree[T]] }
 
     def leadingTypeParams(using Context): List[TypeDef[T]] = paramss match
-      case (tparams @ (tparam: TypeDef[_]) :: _) :: _ => tparams.asInstanceOf[List[TypeDef[T]]]
+      case (tparams @ (tparam: TypeDef[?]) :: _) :: _ => tparams.asInstanceOf[List[TypeDef[T]]]
       case _ => Nil
 
     def trailingParamss(using Context): List[ParamClause[T]] = paramss match
-      case ((tparam: TypeDef[_]) :: _) :: paramss1 => paramss1
+      case ((tparam: TypeDef[?]) :: _) :: paramss1 => paramss1
       case _ => paramss
 
     def termParamss(using Context): List[List[ValDef[T]]] =

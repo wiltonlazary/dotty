@@ -3,44 +3,45 @@ package dotc
 package typer
 
 import backend.sjs.JSDefinitions
-import core._
+import core.*
 import ast.{TreeTypeMap, untpd, tpd}
-import util.Spans._
+import util.Spans.*
 import util.Stats.{record, monitored}
 import printing.{Showable, Printer}
-import printing.Texts._
-import Contexts._
-import Types._
-import Flags._
+import printing.Texts.*
+import Contexts.*
+import Types.*
+import Flags.*
 import Mode.ImplicitsEnabled
 import NameKinds.{LazyImplicitName, ContextBoundParamName}
-import Symbols._
-import Types._
-import Decorators._
-import Names._
-import StdNames._
-import ProtoTypes._
-import ErrorReporting._
+import Symbols.*
+import Types.*
+import Decorators.*
+import Names.*
+import StdNames.*
+import ProtoTypes.*
+import ErrorReporting.*
 import Inferencing.{fullyDefinedType, isFullyDefined}
 import Scopes.newScope
 import Typer.BindingPrec, BindingPrec.*
-import transform.TypeUtils._
-import Hashable._
+import transform.TypeUtils.*
+import Hashable.*
 import util.{EqHashMap, Stats}
 import config.{Config, Feature}
 import Feature.migrateTo3
 import config.Printers.{implicits, implicitsDetailed}
 import collection.mutable
-import reporting._
+import reporting.*
 import transform.Splicer
 import annotation.tailrec
 
 import scala.annotation.internal.sharable
 import scala.annotation.threadUnsafe
+import scala.compiletime.uninitialized
 
 /** Implicit resolution */
 object Implicits:
-  import tpd._
+  import tpd.*
 
   /** An implicit definition `implicitRef` that is visible under a different name, `alias`.
    *  Gets generated if an implicit ref is imported via a renaming import.
@@ -76,7 +77,7 @@ object Implicits:
    *  method with the selecting name? False otherwise.
    */
   def hasExtMethod(tp: Type, expected: Type)(using Context) = expected match
-    case selProto @ SelectionProto(selName: TermName, _, _, _) =>
+    case selProto @ SelectionProto(selName: TermName, _, _, _, _) =>
       tp.memberBasedOnFlags(selName, required = ExtensionMethod).exists
     case _ =>
       false
@@ -431,6 +432,7 @@ object Implicits:
 
   /** A failed search */
   case class SearchFailure(tree: Tree) extends SearchResult {
+    require(tree.tpe.isInstanceOf[SearchFailureType], s"unexpected type for ${tree}")
     final def isAmbiguous: Boolean = tree.tpe.isInstanceOf[AmbiguousImplicits | TooUnspecific]
     final def reason: SearchFailureType = tree.tpe.asInstanceOf[SearchFailureType]
   }
@@ -446,7 +448,7 @@ object Implicits:
     }
   }
 
-  abstract class SearchFailureType extends ErrorType {
+  abstract class SearchFailureType extends ErrorType, Addenda {
     def expectedType: Type
     def argument: Tree
 
@@ -454,7 +456,7 @@ object Implicits:
     def clarify(tp: Type)(using Context): Type = tp
 
     final protected def qualify(using Context): String = expectedType match {
-      case SelectionProto(name, mproto, _, _) if !argument.isEmpty =>
+      case SelectionProto(name, mproto, _, _, _) if !argument.isEmpty =>
         i"provide an extension method `$name` on ${argument.tpe}"
       case NoType =>
         if (argument.isEmpty) i"match expected type"
@@ -463,11 +465,6 @@ object Implicits:
         if (argument.isEmpty) i"match type ${clarify(expectedType)}"
         else i"convert from ${argument.tpe} to ${clarify(expectedType)}"
     }
-
-    /** If search was for an implicit conversion, a note describing the failure
-     *  in more detail - this is either empty or starts with a '\n'
-     */
-    def whyNoConversion(using Context): String = ""
   }
 
   class NoMatchingImplicits(val expectedType: Type, val argument: Tree, constraint: Constraint = OrderingConstraint.empty)
@@ -521,17 +518,21 @@ object Implicits:
 
   /** A failure value indicating that an implicit search for a conversion was not tried */
   case class TooUnspecific(target: Type) extends NoMatchingImplicits(NoType, EmptyTree, OrderingConstraint.empty):
-    override def whyNoConversion(using Context): String =
+
+    override def toAdd(using Context) =
       i"""
          |Note that implicit conversions were not tried because the result of an implicit conversion
-         |must be more specific than $target"""
+         |must be more specific than $target""" :: Nil
 
     override def msg(using Context) =
       super.msg.append("\nThe expected type $target is not specific enough, so no search was attempted")
+
     override def toString = s"TooUnspecific"
+  end TooUnspecific
 
   /** An ambiguous implicits failure */
-  class AmbiguousImplicits(val alt1: SearchSuccess, val alt2: SearchSuccess, val expectedType: Type, val argument: Tree) extends SearchFailureType {
+  class AmbiguousImplicits(val alt1: SearchSuccess, val alt2: SearchSuccess, val expectedType: Type, val argument: Tree) extends SearchFailureType:
+
     def msg(using Context): Message =
       var str1 = err.refStr(alt1.ref)
       var str2 = err.refStr(alt2.ref)
@@ -539,15 +540,16 @@ object Implicits:
         str1 = ctx.printer.toTextRef(alt1.ref).show
         str2 = ctx.printer.toTextRef(alt2.ref).show
       em"both $str1 and $str2 $qualify".withoutDisambiguation()
-    override def whyNoConversion(using Context): String =
+
+    override def toAdd(using Context) =
       if !argument.isEmpty && argument.tpe.widen.isRef(defn.NothingClass) then
-        ""
+        Nil
       else
         val what = if (expectedType.isInstanceOf[SelectionProto]) "extension methods" else "conversions"
         i"""
            |Note that implicit $what cannot be applied because they are ambiguous;
-           |$explanation"""
-  }
+           |$explanation""" :: Nil
+  end AmbiguousImplicits
 
   class MismatchedImplicit(ref: TermRef,
                            val expectedType: Type,
@@ -595,7 +597,7 @@ object Implicits:
   }
 end Implicits
 
-import Implicits._
+import Implicits.*
 
 /** Info relating to implicits that is kept for one run */
 trait ImplicitRunInfo:
@@ -620,7 +622,7 @@ trait ImplicitRunInfo:
 
     object collectParts extends TypeTraverser:
 
-      private var parts: mutable.LinkedHashSet[Type] = _
+      private var parts: mutable.LinkedHashSet[Type] = uninitialized
       private val partSeen = util.HashSet[Type]()
 
       def traverse(t: Type) = try
@@ -843,14 +845,14 @@ end ImplicitRunInfo
 trait Implicits:
   self: Typer =>
 
-  import tpd._
+  import tpd.*
 
   override def viewExists(from: Type, to: Type)(using Context): Boolean =
        !from.isError
     && !to.isError
     && !ctx.isAfterTyper
     && ctx.mode.is(Mode.ImplicitsEnabled)
-    && from.isValueType
+    && from.widen.isValueType
     && (  from.isValueSubType(to)
        || inferView(dummyTreeOfType(from), to)
             (using ctx.fresh.addMode(Mode.ImplicitExploration).setExploreTyperState()).isSuccess
@@ -866,8 +868,8 @@ trait Implicits:
       NoMatchingImplicitsFailure
     else {
       def adjust(to: Type) = to.stripTypeVar.widenExpr match {
-        case SelectionProto(name, memberProto, compat, true) =>
-          SelectionProto(name, memberProto, compat, privateOK = false)
+        case SelectionProto(name, memberProto, compat, true, nameSpan) =>
+          SelectionProto(name, memberProto, compat, privateOK = false, nameSpan)
         case tp => tp
       }
 
@@ -1161,10 +1163,10 @@ trait Implicits:
               pt, locked)
           }
           pt match
-            case selProto @ SelectionProto(selName: TermName, mbrType, _, _) =>
+            case selProto @ SelectionProto(selName: TermName, mbrType, _, _, nameSpan) =>
 
               def tryExtension(using Context) =
-                extMethodApply(untpd.Select(untpdGenerated, selName), argument, mbrType)
+                extMethodApply(untpd.Select(untpdGenerated, selName).withSpan(nameSpan), argument, mbrType)
 
               def tryConversionForSelection(using Context) =
                 val converted = tryConversion
@@ -1840,7 +1842,7 @@ final class SearchRoot extends SearchHistory:
       result match {
         case failure: SearchFailure => failure
         case success: SearchSuccess =>
-          import tpd._
+          import tpd.*
 
           // We might have accumulated dictionary entries for by name implicit arguments
           // which are not in fact used recursively either directly in the outermost result

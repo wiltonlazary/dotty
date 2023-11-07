@@ -9,31 +9,30 @@ import java.io.IOException
 import java.lang.Float.intBitsToFloat
 import java.lang.Double.longBitsToDouble
 
-import Contexts._, Symbols._, Types._, Scopes._, SymDenotations._, Names._, NameOps._
-import StdNames._, Denotations._, NameOps._, Flags._, Constants._, Annotations._, Phases._
+import Contexts.*, Symbols.*, Types.*, Scopes.*, SymDenotations.*, Names.*, NameOps.*
+import StdNames.*, Denotations.*, NameOps.*, Flags.*, Constants.*, Annotations.*, Phases.*
 import NameKinds.{Scala2MethodNameKinds, SuperAccessorName, ExpandedName}
-import util.Spans._
-import dotty.tools.dotc.ast.{tpd, untpd}, ast.tpd._
+import util.Spans.*
+import dotty.tools.dotc.ast.{tpd, untpd}, ast.tpd.*
 import ast.untpd.Modifiers
 import backend.sjs.JSDefinitions
-import printing.Texts._
+import printing.Texts.*
 import printing.Printer
 import io.AbstractFile
-import util.common._
+import util.common.*
 import util.NoSourcePosition
 import typer.Checking.checkNonCyclic
-import typer.Nullables._
-import transform.SymUtils._
-import PickleBuffer._
-import PickleFormat._
-import Decorators._
-import TypeApplications._
+import typer.Nullables.*
+import transform.SymUtils.*
+import PickleBuffer.*
+import PickleFormat.*
+import Decorators.*
+import TypeApplications.*
 import classfile.ClassfileParser
 import scala.collection.mutable
 import scala.collection.mutable.ListBuffer
 import scala.annotation.switch
-import reporting._
-import cc.{adaptFunctionTypeUnderPureFuns, adaptByNameArgUnderPureFuns}
+import reporting.*
 
 object Scala2Unpickler {
 
@@ -147,7 +146,7 @@ class Scala2Unpickler(bytes: Array[Byte], classRoot: ClassDenotation, moduleClas
 
   // print("unpickling "); showPickled() // !!! DEBUG
 
-  import Scala2Unpickler._
+  import Scala2Unpickler.*
 
   val moduleRoot: SymDenotation = inContext(ictx) { moduleClassRoot.sourceModule.denot }
   assert(moduleRoot.isTerm)
@@ -241,7 +240,7 @@ class Scala2Unpickler(bytes: Array[Byte], classRoot: ClassDenotation, moduleClas
   }
 
   private def checkScala2Stdlib(using Context): Unit =
-    assert(!ctx.settings.Yscala2Stdlib.value, "No Scala 2 libraries should be unpickled under -Yscala2-stdlib")
+    assert(!ctx.settings.YcompileScala2Library.value, "No Scala 2 libraries should be unpickled under -Ycompile-scala2-library")
 
   /** The `decls` scope associated with given symbol */
   protected def symScope(sym: Symbol): Scope = symScopes.getOrElseUpdate(sym, newScope(0))
@@ -734,8 +733,8 @@ class Scala2Unpickler(bytes: Array[Byte], classRoot: ClassDenotation, moduleClas
             val info1 = info.symbol.info
             assert(info1.derivesFrom(defn.SingletonClass))
             RefinedType(parent1, name, info1.mapReduceAnd(removeSingleton)(_ & _))
-          case info =>
-            tp.derivedRefinedType(parent1, name, info)
+          case _ =>
+            tp.derivedRefinedType(parent = parent1)
         }
       case tp @ AppliedType(tycon, args) =>
         val tycon1 = tycon.safeDealias
@@ -824,7 +823,7 @@ class Scala2Unpickler(bytes: Array[Byte], classRoot: ClassDenotation, moduleClas
         }
         val tycon = select(pre, sym)
         val args = until(end, () => readTypeRef())
-        if (sym == defn.ByNameParamClass2x) ExprType(args.head.adaptByNameArgUnderPureFuns)
+        if (sym == defn.ByNameParamClass2x) ExprType(args.head)
         else if (ctx.settings.scalajs.value && args.length == 2 &&
             sym.owner == JSDefinitions.jsdefn.ScalaJSJSPackageClass && sym == JSDefinitions.jsdefn.PseudoUnionClass) {
           // Treat Scala.js pseudo-unions as real unions, this requires a
@@ -833,8 +832,7 @@ class Scala2Unpickler(bytes: Array[Byte], classRoot: ClassDenotation, moduleClas
         }
         else if args.nonEmpty then
           tycon.safeAppliedTo(EtaExpandIfHK(sym.typeParams, args.map(translateTempPoly)))
-            .adaptFunctionTypeUnderPureFuns
-        else if (sym.typeParams.nonEmpty) tycon.EtaExpand(sym.typeParams)
+        else if (sym.typeParams.nonEmpty) tycon.etaExpand(sym.typeParams)
         else tycon
       case TYPEBOUNDStpe =>
         val lo = readTypeRef()

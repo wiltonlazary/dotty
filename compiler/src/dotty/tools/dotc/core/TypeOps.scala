@@ -2,21 +2,21 @@ package dotty.tools
 package dotc
 package core
 
-import Contexts._, Types._, Symbols._, Names._, NameKinds.*, Flags._
-import SymDenotations._
-import util.Spans._
+import Contexts.*, Types.*, Symbols.*, Names.*, NameKinds.*, Flags.*
+import SymDenotations.*
+import util.Spans.*
 import util.Stats
-import Decorators._
-import StdNames._
+import Decorators.*
+import StdNames.*
 import collection.mutable
-import ast.tpd._
+import ast.tpd.*
 import reporting.trace
 import config.Printers.typr
 import config.Feature
 import transform.SymUtils.*
-import typer.ProtoTypes._
+import typer.ProtoTypes.*
 import typer.ForceDegree
-import typer.Inferencing._
+import typer.Inferencing.*
 import typer.IfBottom
 import reporting.TestingReporter
 import cc.{CapturingType, derivedCapturingType, CaptureSet, isBoxed, isBoxedCapturing}
@@ -99,7 +99,8 @@ object TypeOps:
         tp match {
           case tp: NamedType =>
             val sym = tp.symbol
-            if (sym.isStatic && !sym.maybeOwner.seesOpaques || (tp.prefix `eq` NoPrefix)) tp
+            if sym.isStatic && !sym.maybeOwner.seesOpaques || (tp.prefix `eq` NoPrefix)
+            then tp
             else derivedSelect(tp, atVariance(variance max 0)(this(tp.prefix)))
           case tp: LambdaType =>
             mapOverLambda(tp) // special cased common case
@@ -883,7 +884,7 @@ object TypeOps:
           else if symbol.is(Module) then
             TermRef(this(tref.prefix), symbol.sourceModule)
           else if (prefixTVar != null)
-            this(tref)
+            this(tref.applyIfParameterized(tref.typeParams.map(_ => WildcardType)))
           else {
             prefixTVar = WildcardType  // prevent recursive call from assigning it
             // e.g. tests/pos/i15029.more.scala, create a TypeVar for `Instances`' B, so we can disregard `Ints`

@@ -31,8 +31,7 @@ abstract class BTypes { self =>
    * Concurrent because stack map frames are computed when in the class writer, which might run
    * on multiple classes concurrently.
    */
-  protected def classBTypeFromInternalNameMap: collection.concurrent.Map[String, ClassBType]
-    // NOTE: Should be a lazy val but scalac does not allow abstract lazy vals (dotty does)
+  protected lazy val classBTypeFromInternalNameMap: collection.concurrent.Map[String, ClassBType]
 
   /**
    * Obtain a previously constructed ClassBType for a given internal name.
@@ -40,7 +39,7 @@ abstract class BTypes { self =>
   def classBTypeFromInternalName(internalName: String) = classBTypeFromInternalNameMap(internalName)
 
   val coreBTypes: CoreBTypes { val bTypes: self.type}
-  import coreBTypes._
+  import coreBTypes.*
 
   /**
    * A BType is either a primitve type, a ClassBType, an ArrayBType of one of these, or a MethodType

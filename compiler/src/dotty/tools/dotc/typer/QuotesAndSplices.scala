@@ -1,28 +1,28 @@
 package dotty.tools.dotc
 package typer
 
-import dotty.tools.dotc.ast._
-import dotty.tools.dotc.config.Feature._
-import dotty.tools.dotc.config.SourceVersion._
-import dotty.tools.dotc.core._
-import dotty.tools.dotc.core.Annotations._
-import dotty.tools.dotc.core.Contexts._
-import dotty.tools.dotc.core.Decorators._
-import dotty.tools.dotc.core.Flags._
+import dotty.tools.dotc.ast.*
+import dotty.tools.dotc.config.Feature.*
+import dotty.tools.dotc.config.SourceVersion.*
+import dotty.tools.dotc.core.*
+import dotty.tools.dotc.core.Annotations.*
+import dotty.tools.dotc.core.Contexts.*
+import dotty.tools.dotc.core.Decorators.*
+import dotty.tools.dotc.core.Flags.*
 import dotty.tools.dotc.core.NameKinds.PatMatGivenVarName
-import dotty.tools.dotc.core.Names._
-import dotty.tools.dotc.core.StdNames._
-import dotty.tools.dotc.core.Symbols._
-import dotty.tools.dotc.core.Types._
+import dotty.tools.dotc.core.Names.*
+import dotty.tools.dotc.core.StdNames.*
+import dotty.tools.dotc.core.Symbols.*
+import dotty.tools.dotc.core.Types.*
 import dotty.tools.dotc.inlines.PrepareInlineable
 import dotty.tools.dotc.quoted.QuotePatterns
 import dotty.tools.dotc.staging.StagingLevel.*
-import dotty.tools.dotc.transform.SymUtils._
+import dotty.tools.dotc.transform.SymUtils.*
 import dotty.tools.dotc.typer.ErrorReporting.errorTree
-import dotty.tools.dotc.typer.Implicits._
-import dotty.tools.dotc.typer.Inferencing._
+import dotty.tools.dotc.typer.Implicits.*
+import dotty.tools.dotc.typer.Inferencing.*
 import dotty.tools.dotc.util.Property
-import dotty.tools.dotc.util.Spans._
+import dotty.tools.dotc.util.Spans.*
 import dotty.tools.dotc.util.Stats.record
 import dotty.tools.dotc.reporting.IllegalVariableInPatternAlternative
 import scala.collection.mutable
@@ -172,10 +172,6 @@ trait QuotesAndSplices {
 
     getQuotedPatternTypeVariable(tree.name.asTypeName) match
       case Some(typeSym) =>
-        checkExperimentalFeature(
-          "support for multiple references to the same type (without backticks) in quoted type patterns (SIP-53)",
-          tree.srcPos,
-          "\n\nSIP-53: https://docs.scala-lang.org/sips/quote-pattern-type-variable-syntax.html")
         warnOnInferredBounds(typeSym)
         ref(typeSym)
       case None =>
@@ -222,12 +218,6 @@ trait QuotesAndSplices {
       case _: TypeBoundsTree => // ok
       case LambdaTypeTree(_, body: TypeBoundsTree) => // ok
       case _ => report.error("Quote type variable definition cannot be an alias", tdef.srcPos)
-
-    if quoted.isType && untpdTypeVariables.nonEmpty then
-      checkExperimentalFeature(
-        "explicit type variable declarations quoted type patterns (SIP-53)",
-        untpdTypeVariables.head.srcPos,
-        "\n\nSIP-53: https://docs.scala-lang.org/sips/quote-pattern-type-variable-syntax.html")
 
     if ctx.mode.is(Mode.InPatternAlternative) then
       for tpVar <- untpdTypeVariables do
@@ -276,7 +266,7 @@ trait QuotesAndSplices {
 }
 
 object QuotesAndSplices {
-  import tpd._
+  import tpd.*
 
   /** Key for mapping from quoted pattern type variable names into their symbol */
   private val TypeVariableKey = new Property.Key[collection.mutable.Map[TypeName, Symbol]]

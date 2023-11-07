@@ -2,18 +2,18 @@ package dotty.tools
 package dotc
 package ast
 
-import core._
-import util.Spans._, Types._, Contexts._, Constants._, Names._, NameOps._, Flags._
-import Symbols._, StdNames._, Trees._, ContextOps._
-import Decorators._, transform.SymUtils._
+import core.*
+import util.Spans.*, Types.*, Contexts.*, Constants.*, Names.*, NameOps.*, Flags.*
+import Symbols.*, StdNames.*, Trees.*, ContextOps.*
+import Decorators.*, transform.SymUtils.*
 import Annotations.Annotation
 import NameKinds.{UniqueName, ContextBoundParamName, ContextFunctionParamName, DefaultGetterName, WildcardParamName}
 import typer.{Namer, Checking}
 import util.{Property, SourceFile, SourcePosition, Chars}
 import config.Feature.{sourceVersion, migrateTo3, enabled}
-import config.SourceVersion._
+import config.SourceVersion.*
 import collection.mutable.ListBuffer
-import reporting._
+import reporting.*
 import annotation.constructorOnly
 import printing.Formatting.hl
 import config.Printers
@@ -22,8 +22,8 @@ import scala.annotation.internal.sharable
 import scala.annotation.threadUnsafe
 
 object desugar {
-  import untpd._
-  import DesugarEnums._
+  import untpd.*
+  import DesugarEnums.*
 
   /** An attachment for companion modules of classes that have a `derives` clause.
    *  The position value indicates the start position of the template of the
@@ -205,12 +205,12 @@ object desugar {
 
   def makeImplicitParameters(
       tpts: List[Tree], implicitFlag: FlagSet,
-      mkParamName: () => TermName,
+      mkParamName: Int => TermName,
       forPrimaryConstructor: Boolean = false
   )(using Context): List[ValDef] =
     for (tpt, i) <- tpts.zipWithIndex yield {
        val paramFlags: FlagSet = if (forPrimaryConstructor) LocalParamAccessor else Param
-       val epname = mkParamName()
+       val epname = mkParamName(i)
        ValDef(epname, tpt, EmptyTree).withFlags(paramFlags | implicitFlag)
     }
 
@@ -254,7 +254,7 @@ object desugar {
           // using clauses, we only need names that are unique among the
           // parameters of the method since shadowing does not affect
           // implicit resolution in Scala 3.
-          mkParamName = () =>
+          mkParamName = i =>
             val index = seenContextBounds + 1 // Start at 1 like FreshNameCreator.
             val ret = ContextBoundParamName(EmptyTermName, index)
             seenContextBounds += 1
@@ -437,7 +437,7 @@ object desugar {
   private def toDefParam(tparam: TypeDef, keepAnnotations: Boolean): TypeDef = {
     var mods = tparam.rawMods
     if (!keepAnnotations) mods = mods.withAnnotations(Nil)
-    tparam.withMods(mods & EmptyFlags | Param)
+    tparam.withMods(mods & (EmptyFlags | Sealed) | Param)
   }
   private def toDefParam(vparam: ValDef, keepAnnotations: Boolean, keepDefault: Boolean): ValDef = {
     var mods = vparam.rawMods
@@ -505,7 +505,7 @@ object desugar {
     def isNonEnumCase = !isEnumCase && (isCaseClass || isCaseObject)
     val isValueClass = parents.nonEmpty && isAnyVal(parents.head)
       // This is not watertight, but `extends AnyVal` will be replaced by `inline` later.
-    val caseClassInScala2StdLib = isCaseClass && ctx.settings.Yscala2Stdlib.value
+    val caseClassInScala2Library = isCaseClass && ctx.settings.YcompileScala2Library.value
 
     val originalTparams = constr1.leadingTypeParams
     val originalVparamss = asTermOnly(constr1.trailingParamss)
@@ -684,7 +684,7 @@ object desugar {
         DefDef(name, Nil, tpt, rhs).withMods(synthetic)
 
       def productElemMeths =
-        if caseClassInScala2StdLib then Nil
+        if caseClassInScala2Library then Nil
         else
           val caseParams = derivedVparamss.head.toArray
           val selectorNamesInBody = normalizedBody.collect {
@@ -715,7 +715,7 @@ object desugar {
           val copyRestParamss = derivedVparamss.tail.nestedMap(vparam =>
             cpy.ValDef(vparam)(rhs = EmptyTree))
           var flags = Synthetic | constr1.mods.flags & copiedAccessFlags
-          if ctx.settings.Yscala2Stdlib.value then flags &~= Private
+          if ctx.settings.YcompileScala2Library.value then flags &~= Private
           DefDef(
             nme.copy,
             joinParams(derivedTparams, copyFirstParams :: copyRestParamss),
@@ -776,7 +776,7 @@ object desugar {
           else {
             val appMods =
               var flags = Synthetic | constr1.mods.flags & copiedAccessFlags
-              if ctx.settings.Yscala2Stdlib.value then flags &~= Private
+              if ctx.settings.YcompileScala2Library.value then flags &~= Private
               Modifiers(flags).withPrivateWithin(constr1.mods.privateWithin)
             val appParamss =
               derivedVparamss.nestedZipWithConserve(constrVparamss)((ap, cp) =>
@@ -802,7 +802,7 @@ object desugar {
           val unapplyParam = makeSyntheticParameter(tpt = classTypeRef)
           val unapplyRHS =
             if (arity == 0) Literal(Constant(true))
-            else if caseClassInScala2StdLib then scala2LibCompatUnapplyRhs(unapplyParam.name)
+            else if caseClassInScala2Library then scala2LibCompatUnapplyRhs(unapplyParam.name)
             else Ident(unapplyParam.name)
           val unapplyResTp = if (arity == 0) Literal(Constant(true)) else TypeTree()
 
@@ -820,7 +820,7 @@ object desugar {
       }
       else if (companionMembers.nonEmpty || companionDerived.nonEmpty || isEnum)
         companionDefs(anyRef, companionMembers)
-      else if (isValueClass)
+      else if isValueClass && !isObject then
         companionDefs(anyRef, Nil)
       else Nil
 
@@ -860,7 +860,7 @@ object desugar {
                     // TODO: drop this once we do not silently insert empty class parameters anymore
           case paramss => paramss
         }
-        val finalFlag = if ctx.settings.Yscala2Stdlib.value then EmptyFlags else Final
+        val finalFlag = if ctx.settings.YcompileScala2Library.value then EmptyFlags else Final
         // implicit wrapper is typechecked in same scope as constructor, so
         // we can reuse the constructor parameters; no derived params are needed.
         DefDef(
@@ -1602,9 +1602,12 @@ object desugar {
       case vd: ValDef => vd
     }
 
-  def makeContextualFunction(formals: List[Tree], body: Tree, erasedParams: List[Boolean])(using Context): Function = {
+  def makeContextualFunction(formals: List[Tree], paramNamesOrNil: List[TermName], body: Tree, erasedParams: List[Boolean])(using Context): Function = {
     val mods = Given
-    val params = makeImplicitParameters(formals, mods, mkParamName = () => ContextFunctionParamName.fresh())
+    val params = makeImplicitParameters(formals, mods,
+      mkParamName = i =>
+        if paramNamesOrNil.isEmpty then ContextFunctionParamName.fresh()
+        else paramNamesOrNil(i))
     FunctionWithMods(params, body, Modifiers(mods), erasedParams)
   }
 
@@ -1841,7 +1844,7 @@ object desugar {
           case ts: Thicket => ts.trees.tail
           case t => Nil
         } map {
-          case Block(Nil, EmptyTree) => Literal(Constant(())) // for s"... ${} ..."
+          case Block(Nil, EmptyTree) => unitLiteral // for s"... ${} ..."
           case Block(Nil, expr) => expr // important for interpolated string as patterns, see i1773.scala
           case t => t
         }
@@ -1869,7 +1872,7 @@ object desugar {
         val pats1 = if (tpt.isEmpty) pats else pats map (Typed(_, tpt))
         flatTree(pats1 map (makePatDef(tree, mods, _, rhs)))
       case ext: ExtMethods =>
-        Block(List(ext), Literal(Constant(())).withSpan(ext.span))
+        Block(List(ext), unitLiteral.withSpan(ext.span))
       case f: FunctionWithMods if f.hasErasedParams => makeFunctionWithValDefs(f, pt)
     }
     desugared.withSpan(tree.span)

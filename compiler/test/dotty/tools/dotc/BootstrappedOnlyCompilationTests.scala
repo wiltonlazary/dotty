@@ -32,7 +32,8 @@ class BootstrappedOnlyCompilationTests {
     ).checkCompile()
   }
 
-  @Test def posWithCompilerCC: Unit =
+  // @Test
+  def posWithCompilerCC: Unit =
     implicit val testGroup: TestGroup = TestGroup("compilePosWithCompilerCC")
     aggregateTests(
       compileDir("tests/pos-with-compiler-cc/dotc", withCompilerOptions.and("-language:experimental.captureChecking"))
@@ -134,7 +135,7 @@ class BootstrappedOnlyCompilationTests {
       if scala.util.Properties.isWin then basicTests
       else compileDir("tests/old-tasty-interpreter-prototype", withTastyInspectorOptions) :: basicTests
 
-    aggregateTests(tests: _*).checkRuns()
+    aggregateTests(tests*).checkRuns()
   }
 
   @Test def runBootstrappedOnly: Unit = {

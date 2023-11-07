@@ -6,59 +6,61 @@ package tasty
 import scala.language.unsafeNulls
 
 import Comments.CommentsContext
-import Contexts._
-import Symbols._
-import Types._
-import Scopes._
-import SymDenotations._
-import Denotations._
-import Names._
-import NameOps._
-import StdNames._
-import Flags._
-import Constants._
-import Annotations._
-import NameKinds._
-import NamerOps._
-import ContextOps._
+import Contexts.*
+import Symbols.*
+import Types.*
+import Scopes.*
+import SymDenotations.*
+import Denotations.*
+import Names.*
+import NameOps.*
+import StdNames.*
+import Flags.*
+import Constants.*
+import Annotations.*
+import NameKinds.*
+import NamerOps.*
+import ContextOps.*
 import Variances.Invariant
 import TastyUnpickler.NameTable
 import typer.ConstFold
 import typer.Checking.checkNonCyclic
-import typer.Nullables._
-import util.Spans._
+import typer.Nullables.*
+import util.Spans.*
 import util.{SourceFile, Property}
 import ast.{Trees, tpd, untpd}
-import Trees._
-import Decorators._
-import transform.SymUtils._
-import cc.{adaptFunctionTypeUnderPureFuns, adaptByNameArgUnderPureFuns}
+import Trees.*
+import Decorators.*
+import transform.SymUtils.*
 import dotty.tools.dotc.quoted.QuotePatterns
 
 import dotty.tools.tasty.{TastyBuffer, TastyReader}
-import TastyBuffer._
+import TastyBuffer.*
 
 import scala.annotation.{switch, tailrec}
 import scala.collection.mutable.ListBuffer
 import scala.collection.mutable
 import config.Printers.pickling
 
-import dotty.tools.tasty.TastyFormat._
+import dotty.tools.tasty.TastyFormat.*
 
 import scala.annotation.constructorOnly
 import scala.annotation.internal.sharable
+import scala.compiletime.uninitialized
 
 /** Unpickler for typed trees
  *  @param reader              the reader from which to unpickle
  *  @param posUnpicklerOpt     the unpickler for positions, if it exists
  *  @param commentUnpicklerOpt the unpickler for comments, if it exists
+ *  @param attributeUnpicklerOpt the unpickler for attributes, if it exists
  */
 class TreeUnpickler(reader: TastyReader,
                     nameAtRef: NameTable,
                     posUnpicklerOpt: Option[PositionUnpickler],
-                    commentUnpicklerOpt: Option[CommentUnpickler]) {
-  import TreeUnpickler._
-  import tpd._
+                    commentUnpicklerOpt: Option[CommentUnpickler],
+                    attributeUnpicklerOpt: Option[AttributeUnpickler]) {
+  import TreeUnpickler.*
+  import tpd.*
 
   /** A map from addresses of definition entries to the symbols they define */
   private val symAtAddr  = new mutable.HashMap[Addr, Symbol]
@@ -89,13 +91,21 @@ class TreeUnpickler(reader: TastyReader,
   private var seenRoots: Set[Symbol] = Set()
 
   /** The root owner tree. See `OwnerTree` class definition. Set by `enterTopLevel`. */
-  private var ownerTree: OwnerTree = _
+  private var ownerTree: OwnerTree = uninitialized
 
   /** Was unpickled class compiled with pureFunctions? */
   private var withPureFuns: Boolean = false
 
   /** Was unpickled class compiled with capture checks? */
   private var withCaptureChecks: Boolean = false
+
+  private val unpicklingScala2Library =
+    attributeUnpicklerOpt.exists(_.attributes.scala2StandardLibrary)
+
+  /** This dependency was compiled with explicit nulls enabled */
+  // TODO Use this to tag the symbols of this dependency as compiled with explicit nulls (see use of unpicklingScala2Library).
+  private val explicitNulls =
+    attributeUnpicklerOpt.exists(_.attributes.explicitNulls)
 
   private def registerSym(addr: Addr, sym: Symbol) =
     symAtAddr(addr) = sym
@@ -124,7 +134,7 @@ class TreeUnpickler(reader: TastyReader,
   }
 
   class Completer(reader: TastyReader)(using @constructorOnly _ctx: Context) extends LazyType {
-    import reader._
+    import reader.*
     val owner = ctx.owner
     val mode = ctx.mode
     val source = ctx.source
@@ -151,7 +161,7 @@ class TreeUnpickler(reader: TastyReader,
   }
 
   class TreeReader(val reader: TastyReader) {
-    import reader._
+    import reader.*
 
     def forkAt(start: Addr): TreeReader = new TreeReader(subReader(start, endAddr))
     def fork: TreeReader = forkAt(currentAddr)
@@ -383,7 +393,7 @@ class TreeUnpickler(reader: TastyReader,
                 // Note that the lambda "rt => ..." is not equivalent to a wildcard closure!
                 // Eta expansion of the latter puts readType() out of the expression.
             case APPLIEDtype =>
-              postProcessFunction(readType().appliedTo(until(end)(readType())))
+              readType().appliedTo(until(end)(readType()))
             case TYPEBOUNDS =>
               val lo = readType()
               if nothingButMods(end) then
@@ -460,8 +470,7 @@ class TreeUnpickler(reader: TastyReader,
           val ref = readAddr()
           typeAtAddr.getOrElseUpdate(ref, forkAt(ref).readType())
         case BYNAMEtype =>
-          val arg = readType()
-          ExprType(if withPureFuns then arg else arg.adaptByNameArgUnderPureFuns)
+          ExprType(readType())
         case _ =>
           ConstantType(readConstant(tag))
       }
@@ -494,12 +503,6 @@ class TreeUnpickler(reader: TastyReader,
 
     def readTreeRef()(using Context): TermRef =
       readType().asInstanceOf[TermRef]
-
-    /** Under pureFunctions, map all function types to impure function types,
-     *  unless the unpickled class was also compiled with pureFunctions.
-     */
-    private def postProcessFunction(tp: Type)(using Context): Type =
-      if withPureFuns then tp else tp.adaptFunctionTypeUnderPureFuns
 
 // ------ Reading definitions -----------------------------------------------------
 
@@ -608,7 +611,8 @@ class TreeUnpickler(reader: TastyReader,
       val rhsStart = currentAddr
       val rhsIsEmpty = nothingButMods(end)
       if (!rhsIsEmpty) skipTree()
-      val (givenFlags, annotFns, privateWithin) = readModifiers(end)
+      val (givenFlags0, annotFns, privateWithin) = readModifiers(end)
+      val givenFlags = if isClass && unpicklingScala2Library then givenFlags0 | Scala2x | Scala2Tasty else givenFlags0
       pickling.println(i"creating symbol $name at $start with flags ${givenFlags.flagsString}, isAbsType = $isAbsType, $ttag")
       val flags = normalizeFlags(tag, givenFlags, name, isAbsType, rhsIsEmpty)
       def adjustIfModule(completer: LazyType) =
@@ -654,6 +658,7 @@ class TreeUnpickler(reader: TastyReader,
       if (isClass) {
         if sym.owner.is(Package) then
           if annots.exists(_.hasSymbol(defn.CaptureCheckedAnnot)) then
+            sym.setFlag(CaptureChecked)
             withCaptureChecks = true
             withPureFuns = true
           else if annots.exists(_.hasSymbol(defn.WithPureFunsAnnot)) then
@@ -1239,8 +1244,7 @@ class TreeUnpickler(reader: TastyReader,
         case SINGLETONtpt =>
           SingletonTypeTree(readTree())
         case BYNAMEtpt =>
-          val arg = readTpt()
-          ByNameTypeTree(if withPureFuns then arg else arg.adaptByNameArgUnderPureFuns)
+          ByNameTypeTree(readTpt())
         case NAMEDARG =>
           NamedArg(readName(), readTree())
         case EXPLICITtpt =>
@@ -1452,7 +1456,7 @@ class TreeUnpickler(reader: TastyReader,
               val args = until(end)(readTpt())
               val tree = untpd.AppliedTypeTree(tycon, args)
               val ownType = ctx.typeAssigner.processAppliedType(tree, tycon.tpe.safeAppliedTo(args.tpes))
-              tree.withType(postProcessFunction(ownType))
+              tree.withType(ownType)
             case ANNOTATEDtpt =>
               Annotated(readTpt(), readTree())
             case LAMBDAtpt =>

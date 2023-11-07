@@ -1,21 +1,21 @@
 package dotty.tools.dotc
 package transform
 
-import core._
-import Symbols._, Types._, Contexts._, Names._, StdNames._, Constants._, SymUtils._
-import Flags._
-import DenotTransformers._
-import Decorators._
-import NameOps._
+import core.*
+import Symbols.*, Types.*, Contexts.*, Names.*, StdNames.*, Constants.*, SymUtils.*
+import Flags.*
+import DenotTransformers.*
+import Decorators.*
+import NameOps.*
 import Annotations.Annotation
 import typer.ProtoTypes.constrained
 import ast.untpd
 import ValueClasses.isDerivedValueClass
-import SymUtils._
+import SymUtils.*
 import util.Property
 import util.Spans.Span
 import config.Printers.derive
-import NullOpsDecorator._
+import NullOpsDecorator.*
 
 object SyntheticMembers {
 
@@ -53,8 +53,8 @@ object SyntheticMembers {
  *    def hashCode(): Int
  */
 class SyntheticMembers(thisPhase: DenotTransformer) {
-  import SyntheticMembers._
-  import ast.tpd._
+  import SyntheticMembers.*
+  import ast.tpd.*
 
   private var myValueSymbols: List[Symbol] = Nil
   private var myCaseSymbols: List[Symbol] = Nil
@@ -162,7 +162,7 @@ class SyntheticMembers(thisPhase: DenotTransformer) {
         case nme.productPrefix if isEnumValue => nameRef
         case nme.productPrefix => ownName
         case nme.productElement =>
-          if ctx.settings.Yscala2Stdlib.value then productElementBodyForScala2Compat(accessors.length, vrefss.head.head)
+          if ctx.settings.YcompileScala2Library.value then productElementBodyForScala2Compat(accessors.length, vrefss.head.head)
           else productElementBody(accessors.length, vrefss.head.head)
         case nme.productElementName => productElementNameBody(accessors.length, vrefss.head.head)
       }
@@ -530,12 +530,9 @@ class SyntheticMembers(thisPhase: DenotTransformer) {
             (rawRef, rawInfo)
       baseInfo match
         case tl: PolyType =>
-          val (tl1, tpts) = constrained(tl, untpd.EmptyTree, alwaysAddTypeVars = true)
-          val targs =
-            for (tpt <- tpts) yield
-              tpt.tpe match {
-                case tvar: TypeVar => tvar.instantiate(fromBelow = false)
-              }
+          val tvars = constrained(tl)
+          val targs = for tvar <- tvars yield
+            tvar.instantiate(fromBelow = false)
           (baseRef.appliedTo(targs), extractParams(tl.instantiate(targs)))
         case methTpe =>
           (baseRef, extractParams(methTpe))
@@ -669,7 +666,7 @@ class SyntheticMembers(thisPhase: DenotTransformer) {
     val syntheticMembers = serializableObjectMethod(clazz) ::: serializableEnumValueMethod(clazz) ::: caseAndValueMethods(clazz)
     checkInlining(syntheticMembers)
     val impl1 = cpy.Template(impl)(body = syntheticMembers ::: impl.body)
-    if ctx.settings.Yscala2Stdlib.value then impl1
+    if ctx.settings.YcompileScala2Library.value then impl1
     else addMirrorSupport(impl1)
   }
 

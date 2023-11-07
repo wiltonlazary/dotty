@@ -8,6 +8,7 @@ Text => empty
 Language => Scala
 Symbols => 9 entries
 Occurrences => 19 entries
+Diagnostics => 2 entries
 
 Symbols:
 example/Access# => class Access extends Object { self: Access => +8 decls }
@@ -41,6 +42,10 @@ Occurrences:
 [9:6..9:8): m7 <- example/Access#m7().
 [9:11..9:14): ??? -> scala/Predef.`???`().
 
+Diagnostics:
+[3:14..3:16): [warning] unused private member
+[4:20..4:22): [warning] unused private member
+
 expect/Advanced.scala
 ---------------------
 
@@ -51,6 +56,7 @@ Text => empty
 Language => Scala
 Symbols => 61 entries
 Occurrences => 143 entries
+Diagnostics => 1 entries
 Synthetics => 3 entries
 
 Symbols:
@@ -193,21 +199,21 @@ Occurrences:
 [27:6..27:9): s1x <- advanced/Test.s1x.
 [27:12..27:13): s -> advanced/Test.s.
 [27:14..27:16): s1 -> advanced/Structural#s1().
-[27:16..27:18): .x -> scala/reflect/Selectable#selectDynamic().
+[27:17..27:18): x -> scala/reflect/Selectable#selectDynamic().
 [28:6..28:8): s2 <- advanced/Test.s2.
 [28:11..28:12): s -> advanced/Test.s.
 [28:13..28:15): s2 -> advanced/Structural#s2().
 [29:6..29:9): s2x <- advanced/Test.s2x.
 [29:12..29:13): s -> advanced/Test.s.
 [29:14..29:16): s2 -> advanced/Structural#s2().
-[29:16..29:18): .x -> scala/reflect/Selectable#selectDynamic().
+[29:17..29:18): x -> scala/reflect/Selectable#selectDynamic().
 [30:6..30:8): s3 <- advanced/Test.s3.
 [30:11..30:12): s -> advanced/Test.s.
 [30:13..30:15): s3 -> advanced/Structural#s3().
 [31:6..31:9): s3x <- advanced/Test.s3x.
 [31:12..31:13): s -> advanced/Test.s.
 [31:14..31:16): s3 -> advanced/Structural#s3().
-[31:16..31:18): .m -> scala/reflect/Selectable#applyDynamic().
+[31:17..31:18): m -> scala/reflect/Selectable#applyDynamic().
 [31:19..31:22): ??? -> scala/Predef.`???`().
 [33:6..33:7): e <- advanced/Test.e.
 [33:14..33:23): Wildcards -> advanced/Wildcards#
@@ -242,7 +248,7 @@ Occurrences:
 [47:11..47:14): foo -> advanced/Test.foo.
 [47:15..47:16): A -> local17
 [47:19..47:22): foo -> advanced/Test.foo.
-[47:22..47:24): .a -> scala/reflect/Selectable#selectDynamic().
+[47:23..47:24): a -> scala/reflect/Selectable#selectDynamic().
 [52:6..52:13): HKClass <- advanced/HKClass#
 [52:13..52:13): <- advanced/HKClass#`<init>`().
 [52:14..52:15): F <- advanced/HKClass#[F]
@@ -261,6 +267,9 @@ Occurrences:
 [53:37..53:38): x -> advanced/HKClass#foo().(x)
 [53:39..53:47): toString -> scala/Tuple2#toString().
 
+Diagnostics:
+[40:12..40:15): [warning] unused local definition
+
 Synthetics:
 [27:12..27:16):s.s1 => reflectiveSelectable(*)
 [29:12..29:16):s.s2 => reflectiveSelectable(*)
@@ -276,6 +285,7 @@ Text => empty
 Language => Scala
 Symbols => 23 entries
 Occurrences => 55 entries
+Diagnostics => 2 entries
 
 Symbols:
 annot/Alias. => final object Alias extends Object { self: Alias.type => +2 decls }
@@ -359,6 +369,10 @@ Occurrences:
 [39:11..39:26): ClassAnnotation -> com/javacp/annot/ClassAnnotation#
 [39:28..39:33): param -> scala/annotation/meta/param#
 
+Diagnostics:
+[7:67..7:68): [warning] unused explicit parameter
+[21:33..21:34): [warning] unused explicit parameter
+
 expect/Anonymous.scala
 ----------------------
 
@@ -369,6 +383,7 @@ Text => empty
 Language => Scala
 Symbols => 23 entries
 Occurrences => 50 entries
+Diagnostics => 1 entries
 Synthetics => 2 entries
 
 Symbols:
@@ -448,6 +463,9 @@ Occurrences:
 [23:33..23:39): String -> scala/Predef.String#
 [23:42..23:45): ??? -> scala/Predef.`???`().
 
+Diagnostics:
+[14:8..14:9): [warning] unused local definition
+
 Synthetics:
 [10:2..10:9):locally => *[Unit]
 [13:2..13:9):locally => *[Unit]
@@ -477,6 +495,60 @@ Occurrences:
 [4:4..4:7): bar <- angiven/AnonymousGiven$package.bar().
 [4:14..4:17): Foo -> angiven/Foo#
 
+expect/CaseClass.scala
+----------------------
+
+Summary:
+Schema => SemanticDB v4
+Uri => CaseClass.scala
+Text => empty
+Language => Scala
+Symbols => 22 entries
+Occurrences => 17 entries
+
+Symbols:
+caseclass/CaseClass# => case class CaseClass extends Object with Product with Serializable { self: CaseClass => +8 decls }
+caseclass/CaseClass#_1(). => method _1 => Int
+caseclass/CaseClass#_2(). => method _2 => Int
+caseclass/CaseClass#`<init>`(). => primary ctor <init> (val param int1: Int, val param int2: Int): CaseClass
+caseclass/CaseClass#`<init>`().(int1) => val param int1: Int
+caseclass/CaseClass#`<init>`().(int2) => val param int2: Int
+caseclass/CaseClass#copy$default$1(). => method copy$default$1 => Int @uncheckedVariance
+caseclass/CaseClass#copy$default$2(). => method copy$default$2 => Int @uncheckedVariance
+caseclass/CaseClass#copy(). => method copy (param int1: Int, param int2: Int): CaseClass
+caseclass/CaseClass#copy().(int1) => param int1: Int
+caseclass/CaseClass#copy().(int2) => param int2: Int
+caseclass/CaseClass#int1. => val method int1 Int
+caseclass/CaseClass#int2. => val method int2 Int
+caseclass/CaseClass. => final object CaseClass extends Object { self: CaseClass.type => +5 decls }
+caseclass/CaseClass.apply(). => method apply (param int: Int): CaseClass
+caseclass/CaseClass.apply().(int) => param int: Int
+caseclass/CaseClass.apply(+1). => method apply (): CaseClass
+caseclass/CaseClass.apply(+2). => method apply (param int1: Int, param int2: Int): CaseClass
+caseclass/CaseClass.apply(+2).(int1) => param int1: Int
+caseclass/CaseClass.apply(+2).(int2) => param int2: Int
+caseclass/CaseClass.unapply(). => method unapply (param x$1: CaseClass): CaseClass
+caseclass/CaseClass.unapply().(x$1) => param x$1: CaseClass
+
+Occurrences:
+[0:8..0:17): caseclass <- caseclass/
+[2:11..2:20): CaseClass <- caseclass/CaseClass#
+[2:20..2:20): <- caseclass/CaseClass#`<init>`().
+[2:21..2:25): int1 <- caseclass/CaseClass#int1.
+[2:27..2:30): Int -> scala/Int#
+[2:32..2:36): int2 <- caseclass/CaseClass#int2.
+[2:38..2:41): Int -> scala/Int#
+[4:7..4:16): CaseClass <- caseclass/CaseClass.
+[5:6..5:11): apply <- caseclass/CaseClass.apply().
+[5:12..5:15): int <- caseclass/CaseClass.apply().(int)
+[5:17..5:20): Int -> scala/Int#
+[5:23..5:32): CaseClass -> caseclass/CaseClass#
+[5:35..5:44): CaseClass -> caseclass/CaseClass.
+[5:45..5:48): int -> caseclass/CaseClass.apply().(int)
+[6:6..6:11): apply <- caseclass/CaseClass.apply(+1).
+[6:15..6:24): CaseClass -> caseclass/CaseClass#
+[6:27..6:36): CaseClass -> caseclass/CaseClass.
+
 expect/Classes.scala
 --------------------
 
@@ -487,6 +559,7 @@ Text => empty
 Language => Scala
 Symbols => 108 entries
 Occurrences => 127 entries
+Diagnostics => 4 entries
 Synthetics => 2 entries
 
 Symbols:
@@ -728,9 +801,43 @@ Occurrences:
 [53:4..53:9): local -> local4
 [53:10..53:11): + -> scala/Int#`+`(+4).
 
+Diagnostics:
+[18:9..18:10): [warning] unused explicit parameter
+[20:27..20:28): [warning] unused explicit parameter
+[22:27..22:28): [warning] unused explicit parameter
+[24:10..24:11): [warning] unused explicit parameter
+
 Synthetics:
 [51:16..51:27):List(1).map => *[Int]
 [51:16..51:20):List => *.apply[Int]
+
+expect/Deprecated.scala
+-----------------------
+
+Summary:
+Schema => SemanticDB v4
+Uri => Deprecated.scala
+Text => empty
+Language => Scala
+Symbols => 3 entries
+Occurrences => 6 entries
+Diagnostics => 1 entries
+
+Symbols:
+_empty_/Deprecated. => final object Deprecated extends Object { self: Deprecated.type => +3 decls }
+_empty_/Deprecated.deprecatedMethod(). => @deprecated method deprecatedMethod => Nothing
+_empty_/Deprecated.main(). => method main => Nothing
+
+Occurrences:
+[0:7..0:17): Deprecated <- _empty_/Deprecated.
+[1:3..1:13): deprecated -> scala/deprecated#
+[1:18..1:34): deprecatedMethod <- _empty_/Deprecated.deprecatedMethod().
+[1:37..1:40): ??? -> scala/Predef.`???`().
+[2:6..2:10): main <- _empty_/Deprecated.main().
+[2:13..2:29): deprecatedMethod -> _empty_/Deprecated.deprecatedMethod().
+
+Diagnostics:
+[2:13..2:29): [warning] method deprecatedMethod in object Deprecated is deprecated
 
 expect/Empty.scala
 ------------------
@@ -791,6 +898,7 @@ Text => empty
 Language => Scala
 Symbols => 30 entries
 Occurrences => 49 entries
+Diagnostics => 3 entries
 
 Symbols:
 endmarkers/Container# => class Container extends Object { self: Container => +5 decls }
@@ -875,6 +983,11 @@ Occurrences:
 [64:14..64:20): String -> scala/Predef.String#
 [67:4..67:14): endmarkers -> endmarkers/
 
+Diagnostics:
+[38:8..38:16): [warning] unused local definition
+[42:8..42:16): [warning] unused local definition
+[46:8..46:16): [warning] unused local definition
+
 expect/EndMarkers2.scala
 ------------------------
 
@@ -956,6 +1069,7 @@ Text => empty
 Language => Scala
 Symbols => 181 entries
 Occurrences => 159 entries
+Diagnostics => 1 entries
 Synthetics => 6 entries
 
 Symbols:
@@ -1232,7 +1346,7 @@ Occurrences:
 [46:28..46:29): C -> _empty_/Enums.`<:<`.Refl#[C]
 [46:30..46:33): <:< -> _empty_/Enums.`<:<`#
 [46:34..46:35): C -> _empty_/Enums.`<:<`.Refl#[C]
-[48:9..48:12): <:< <- _empty_/Enums.`<:<`.
+[48:10..48:13): <:< <- _empty_/Enums.`<:<`.
 [49:11..49:12): T <- _empty_/Enums.`<:<`.`given_<:<_T_T`().[T]
 [49:16..49:17): T -> _empty_/Enums.`<:<`.`given_<:<_T_T`().[T]
 [49:18..49:21): <:< -> _empty_/Enums.`<:<`#
@@ -1302,6 +1416,9 @@ Occurrences:
 [68:9..68:16): Neptune <- _empty_/Enums.Planet.Neptune.
 [68:25..68:31): Planet -> _empty_/Enums.Planet#
 
+Diagnostics:
+[30:12..30:17): [warning] unused explicit parameter
+
 Synthetics:
 [52:9..52:13):Refl => *.unapply[Option[B]]
 [52:31..52:50):identity[Option[B]] => *[Function1[A, Option[B]]]
@@ -1355,6 +1472,7 @@ Text => empty
 Language => Scala
 Symbols => 5 entries
 Occurrences => 23 entries
+Diagnostics => 1 entries
 
 Symbols:
 example/Example. => final object Example extends Object { self: Example.type => +3 decls }
@@ -1388,6 +1506,9 @@ Occurrences:
 [9:24..9:32): classTag -> scala/reflect/package.classTag().
 [9:33..9:36): Int -> scala/Int#
 
+Diagnostics:
+[2:24..2:30): [warning] unused import
+
 expect/Extension.scala
 ----------------------
 
@@ -1396,12 +1517,18 @@ Schema => SemanticDB v4
 Uri => Extension.scala
 Text => empty
 Language => Scala
-Symbols => 26 entries
-Occurrences => 52 entries
+Symbols => 32 entries
+Occurrences => 66 entries
 Synthetics => 1 entries
 
 Symbols:
-ext/Extension$package. => final package object ext extends Object { self: ext.type => +6 decls }
+ext/DeckUsage. => final object DeckUsage extends Object { self: DeckUsage.type => +2 decls }
+ext/DeckUsage.deck. => val method deck Deck
+ext/Extension$package. => final package object ext extends Object { self: ext.type { opaque type Deck  } => +9 decls }
+ext/Extension$package.Deck# => opaque type Deck 
+ext/Extension$package.Deck. => final object Deck extends Object { self: Deck.type => +2 decls }
+ext/Extension$package.Deck.fooSize(). => method fooSize (param data: Deck): Int
+ext/Extension$package.Deck.fooSize().(data) => param data: Deck
 ext/Extension$package.`#*#`(). => method #*# (param s: String)(param i: Int): Tuple2[String, Int]
 ext/Extension$package.`#*#`().(i) => param i: Int
 ext/Extension$package.`#*#`().(s) => param s: String
@@ -1481,6 +1608,20 @@ Occurrences:
 [17:44..17:45): U -> ext/Functor#map().[U]
 [17:48..17:49): F -> ext/Functor#[F]
 [17:50..17:51): U -> ext/Functor#map().[U]
+[19:12..19:16): Deck <- ext/Extension$package.Deck#
+[19:19..19:23): Long -> scala/Long#
+[20:7..20:11): Deck <- ext/Extension$package.Deck.
+[21:13..21:17): data <- ext/Extension$package.Deck.fooSize().(data)
+[21:19..21:23): Deck -> ext/Extension$package.Deck#
+[22:8..22:15): fooSize <- ext/Extension$package.Deck.fooSize().
+[22:17..22:20): Int -> scala/Int#
+[22:23..22:26): ??? -> scala/Predef.`???`().
+[24:7..24:16): DeckUsage <- ext/DeckUsage.
+[25:6..25:10): deck <- ext/DeckUsage.deck.
+[25:12..25:16): Deck -> ext/Extension$package.Deck#
+[25:19..25:22): ??? -> scala/Predef.`???`().
+[26:2..26:6): deck -> ext/DeckUsage.deck.
+[26:7..26:14): fooSize -> ext/Extension$package.Deck.fooSize().
 
 Synthetics:
 [14:46..14:61):summon[Read[T]] => *(x$2)
@@ -1583,12 +1724,12 @@ Schema => SemanticDB v4
 Uri => Givens.scala
 Text => empty
 Language => Scala
-Symbols => 29 entries
-Occurrences => 66 entries
+Symbols => 33 entries
+Occurrences => 72 entries
 Synthetics => 3 entries
 
 Symbols:
-a/b/Givens. => final object Givens extends Object { self: Givens.type => +12 decls }
+a/b/Givens. => final object Givens extends Object { self: Givens.type => +13 decls }
 a/b/Givens.Monoid# => trait Monoid [typeparam A ] extends Object { self: Monoid[A] => +4 decls }
 a/b/Givens.Monoid#[A] => typeparam A 
 a/b/Givens.Monoid#`<init>`(). => primary ctor <init> [typeparam A ](): Monoid[A]
@@ -1606,7 +1747,11 @@ a/b/Givens.given_Monoid_String.combine().(y) => param y: String
 a/b/Givens.given_Monoid_String.empty(). => method empty => String <: a/b/Givens.Monoid#empty().
 a/b/Givens.goodbye1. => val method goodbye1 String
 a/b/Givens.hello1. => val method hello1 String
-a/b/Givens.int2String(). => final implicit given inline macro int2String => Conversion[Int, String]
+a/b/Givens.int2String# => implicit given class int2String extends Conversion[Int, String] { self: int2String => +2 decls }
+a/b/Givens.int2String#`<init>`(). => primary ctor <init> (): int2String
+a/b/Givens.int2String#apply(). => method apply (param x: Int): String <: scala/Conversion#apply()., scala/Function1#apply().
+a/b/Givens.int2String#apply().(x) => param x: Int
+a/b/Givens.int2String(). => final implicit given inline macro int2String => int2String
 a/b/Givens.sayGoodbye(). => method sayGoodbye [typeparam B ](param any: B): String
 a/b/Givens.sayGoodbye().(any) => param any: B
 a/b/Givens.sayGoodbye().[B] => typeparam B 
@@ -1626,8 +1771,8 @@ Occurrences:
 [5:16..5:19): any <- a/b/Givens.sayHello().(any)
 [5:21..5:22): A -> a/b/Givens.sayHello().[A]
 [6:8..6:16): sayHello <- a/b/Givens.sayHello().
+[6:19..6:20): s -> scala/StringContext#s().
 [6:34..6:37): any -> a/b/Givens.sayHello().(any)
-[6:37..6:38): " -> scala/StringContext#s().
 [8:13..8:14): B <- a/b/Givens.sayGoodbye().[B]
 [8:13..8:14): B <- a/b/Givens.saySoLong().[B]
 [8:16..8:19): any <- a/b/Givens.sayGoodbye().(any)
@@ -1635,11 +1780,11 @@ Occurrences:
 [8:21..8:22): B -> a/b/Givens.sayGoodbye().[B]
 [8:21..8:22): B -> a/b/Givens.saySoLong().[B]
 [9:8..9:18): sayGoodbye <- a/b/Givens.sayGoodbye().
+[9:21..9:22): s -> scala/StringContext#s().
 [9:38..9:41): any -> a/b/Givens.sayGoodbye().(any)
-[9:41..9:42): " -> scala/StringContext#s().
 [10:8..10:17): saySoLong <- a/b/Givens.saySoLong().
+[10:20..10:21): s -> scala/StringContext#s().
 [10:37..10:40): any -> a/b/Givens.saySoLong().(any)
-[10:40..10:41): " -> scala/StringContext#s().
 [12:6..12:12): hello1 <- a/b/Givens.hello1.
 [12:17..12:25): sayHello -> a/b/Givens.sayHello().
 [13:6..13:14): goodbye1 <- a/b/Givens.goodbye1.
@@ -1670,21 +1815,27 @@ Occurrences:
 [22:55..22:56): y -> a/b/Givens.given_Monoid_String.combine().(y)
 [24:15..24:25): int2String <- a/b/Givens.int2String().
 [24:27..24:37): Conversion -> scala/Conversion#
+[24:27..24:27): <- a/b/Givens.int2String#`<init>`().
 [24:38..24:41): Int -> scala/Int#
 [24:43..24:49): String -> scala/Predef.String#
-[24:55..24:63): toString -> scala/Any#toString().
-[26:6..26:9): foo <- a/b/Givens.foo().
-[26:10..26:11): A <- a/b/Givens.foo().[A]
-[26:19..26:20): A <- a/b/Givens.foo().(A)
-[26:22..26:28): Monoid -> a/b/Givens.Monoid#
-[26:29..26:30): A -> a/b/Givens.foo().[A]
-[26:34..26:35): A -> a/b/Givens.foo().[A]
-[26:38..26:39): A -> a/b/Givens.foo().(A)
-[26:40..26:47): combine -> a/b/Givens.Monoid#combine().
-[26:48..26:49): A -> a/b/Givens.foo().(A)
-[26:50..26:55): empty -> a/b/Givens.Monoid#empty().
-[26:57..26:58): A -> a/b/Givens.foo().(A)
-[26:59..26:64): empty -> a/b/Givens.Monoid#empty().
+[25:8..25:13): apply <- a/b/Givens.int2String#apply().
+[25:14..25:15): x <- a/b/Givens.int2String#apply().(x)
+[25:17..25:20): Int -> scala/Int#
+[25:23..25:29): String -> scala/Predef.String#
+[25:32..25:33): x -> a/b/Givens.int2String#apply().(x)
+[25:34..25:42): toString -> scala/Any#toString().
+[27:6..27:9): foo <- a/b/Givens.foo().
+[27:10..27:11): A <- a/b/Givens.foo().[A]
+[27:19..27:20): A <- a/b/Givens.foo().(A)
+[27:22..27:28): Monoid -> a/b/Givens.Monoid#
+[27:29..27:30): A -> a/b/Givens.foo().[A]
+[27:34..27:35): A -> a/b/Givens.foo().[A]
+[27:38..27:39): A -> a/b/Givens.foo().(A)
+[27:40..27:47): combine -> a/b/Givens.Monoid#combine().
+[27:48..27:49): A -> a/b/Givens.foo().(A)
+[27:50..27:55): empty -> a/b/Givens.Monoid#empty().
+[27:57..27:58): A -> a/b/Givens.foo().(A)
+[27:59..27:64): empty -> a/b/Givens.Monoid#empty().
 
 Synthetics:
 [12:17..12:25):sayHello => *[Int]
@@ -1752,12 +1903,12 @@ Occurrences:
 [20:6..20:7): x <- example/ImplicitConversion#x.
 [20:9..20:12): Int -> scala/Int#
 [20:15..20:22): message -> example/ImplicitConversion#message.
+[23:2..23:3): s -> scala/StringContext#s().
 [23:11..23:18): message -> example/ImplicitConversion#message.
 [23:20..23:26): number -> example/ImplicitConversion#number.
-[23:26..23:27): " -> scala/StringContext#s().
+[24:2..24:3): s -> scala/StringContext#s().
 [25:7..25:14): message -> example/ImplicitConversion#message.
 [26:7..26:13): number -> example/ImplicitConversion#number.
-[26:15..26:16): " -> scala/StringContext#s().
 [26:17..26:28): stripMargin -> scala/collection/StringOps#stripMargin(+1).
 [28:6..28:7): a <- example/ImplicitConversion#a.
 [28:9..28:12): Int -> scala/Int#
@@ -1802,6 +1953,7 @@ Text => empty
 Language => Scala
 Symbols => 2 entries
 Occurrences => 16 entries
+Diagnostics => 1 entries
 
 Symbols:
 _empty_/Imports$package. => final package object _empty_ extends Object { self: _empty_.type => +2 decls }
@@ -1824,6 +1976,9 @@ Occurrences:
 [3:22..3:24): HM -> scala/collection/immutable/HashMap.
 [3:25..3:28): Int -> scala/Int#
 [3:30..3:33): Int -> scala/Int#
+
+Diagnostics:
+[0:26..0:34): [warning] unused import
 
 expect/InstrumentTyper.scala
 ----------------------------
@@ -3262,6 +3417,73 @@ Occurrences:
 [13:17..13:17): <- selfs/C6#`<init>`().
 [13:27..13:28): B -> selfs/B#
 
+expect/StructuralTypes.scala
+----------------------------
+
+Summary:
+Schema => SemanticDB v4
+Uri => StructuralTypes.scala
+Text => empty
+Language => Scala
+Symbols => 12 entries
+Occurrences => 33 entries
+Synthetics => 4 entries
+
+Symbols:
+example/StructuralTypes. => final object StructuralTypes extends Object { self: StructuralTypes.type => +5 decls }
+example/StructuralTypes.User# => type User  = Object { abstract method foo (param x: Int): Int; abstract method age => Int; abstract method name => String }
+example/StructuralTypes.V. => val method V Object { abstract method scalameta => String }
+example/StructuralTypes.fooBar. => val method fooBar Int
+example/StructuralTypes.user. => val method user User
+local0 => abstract method name => String
+local1 => abstract method age => Int
+local2 => param x: Int
+local3 => abstract method foo (param x: Int): Int
+local4 => abstract method scalameta => String
+local5 => method scalameta => String
+local6 => final class $anon extends Object { self: $anon => +2 decls }
+
+Occurrences:
+[0:8..0:15): example <- example/
+[2:7..2:14): reflect -> scala/reflect/
+[2:15..2:25): Selectable -> scala/reflect/Selectable.
+[2:26..2:46): reflectiveSelectable -> scala/reflect/Selectable.reflectiveSelectable().
+[4:7..4:22): StructuralTypes <- example/StructuralTypes.
+[5:7..5:11): User <- example/StructuralTypes.User#
+[6:8..6:12): name <- local0
+[6:14..6:20): String -> scala/Predef.String#
+[7:8..7:11): age <- local1
+[7:13..7:16): Int -> scala/Int#
+[8:8..8:11): foo <- local3
+[8:12..8:13): x <- local2
+[8:15..8:18): Int -> scala/Int#
+[8:21..8:24): Int -> scala/Int#
+[11:6..11:10): user <- example/StructuralTypes.user.
+[11:18..11:30): asInstanceOf -> scala/Any#asInstanceOf().
+[11:31..11:35): User -> example/StructuralTypes.User#
+[12:2..12:6): user -> example/StructuralTypes.user.
+[12:7..12:11): name -> scala/reflect/Selectable#selectDynamic().
+[13:2..13:6): user -> example/StructuralTypes.user.
+[13:7..13:10): age -> scala/reflect/Selectable#selectDynamic().
+[14:6..14:12): fooBar <- example/StructuralTypes.fooBar.
+[14:15..14:19): user -> example/StructuralTypes.user.
+[14:20..14:23): foo -> scala/reflect/Selectable#applyDynamic().
+[16:6..16:7): V <- example/StructuralTypes.V.
+[16:9..16:15): Object -> java/lang/Object#
+[17:8..17:17): scalameta <- local4
+[17:19..17:25): String -> scala/Predef.String#
+[18:6..18:6): <- local6
+[19:8..19:17): scalameta <- local5
+[20:2..20:3): V -> example/StructuralTypes.V.
+[20:4..20:13): scalameta -> scala/reflect/Selectable#selectDynamic().
+[21:4..21:19): StructuralTypes -> example/StructuralTypes.
+
+Synthetics:
+[12:2..12:6):user => reflectiveSelectable(*)
+[13:2..13:6):user => reflectiveSelectable(*)
+[14:15..14:19):user => reflectiveSelectable(*)
+[20:2..20:3):V => reflectiveSelectable(*)
+
 expect/Synthetic.scala
 ----------------------
 
@@ -3590,6 +3812,7 @@ Text => empty
 Language => Scala
 Symbols => 22 entries
 Occurrences => 45 entries
+Diagnostics => 3 entries
 Synthetics => 11 entries
 
 Symbols:
@@ -3605,7 +3828,7 @@ example/ValPattern#app(). => method app (): Unit
 example/ValPattern#left. => val method left Int
 example/ValPattern#leftVar(). => var method leftVar Int
 example/ValPattern#number1. => val method number1 Int
-example/ValPattern#number1Var(). => var method number1Var Int
+example/ValPattern#number1Var(). => val method number1Var Int
 example/ValPattern#q1. => val method q1 Nothing
 example/ValPattern#right. => val method right Int
 example/ValPattern#rightVar(). => var method rightVar Int
@@ -3614,7 +3837,7 @@ local1 => val local right: Int
 local2 => val local number1: Int
 local3 => var local leftVar: Int
 local4 => var local rightVar: Int
-local5 => var local number1Var: Int
+local5 => val local number1Var: Int
 
 Occurrences:
 [0:8..0:15): example <- example/
@@ -3663,6 +3886,11 @@ Occurrences:
 [39:10..39:17): leftVar -> local3
 [40:10..40:18): rightVar -> local4
 
+Diagnostics:
+[30:11..30:18): [warning] unset local variable, consider using an immutable val instead
+[30:20..30:28): [warning] unset local variable, consider using an immutable val instead
+[31:15..31:25): [warning] unset local variable, consider using an immutable val instead
+
 Synthetics:
 [5:6..5:10):Some => *.unapply[Int]
 [6:4..6:8):Some => *.apply[Int]
@@ -3686,6 +3914,7 @@ Text => empty
 Language => Scala
 Symbols => 42 entries
 Occurrences => 129 entries
+Diagnostics => 1 entries
 
 Symbols:
 example/ValUsages. => final object ValUsages extends Object { self: ValUsages.type => +2 decls }
@@ -3860,7 +4089,10 @@ Occurrences:
 [48:18..48:19): v -> example/ValUsages.v.
 [48:20..48:23): yim -> example/Vals#yim().
 [49:2..49:3): v -> example/ValUsages.v.
-[49:3..49:18): .explicitSetter -> example/Vals#`explicitSetter_=`().
+[49:4..49:18): explicitSetter -> example/Vals#`explicitSetter_=`().
+
+Diagnostics:
+[2:20..2:21): [warning] unused explicit parameter
 
 expect/Vararg.scala
 -------------------
@@ -3904,6 +4136,7 @@ Text => empty
 Language => Scala
 Symbols => 8 entries
 Occurrences => 18 entries
+Diagnostics => 1 entries
 
 Symbols:
 _empty_/Test_depmatch. => final object Test_depmatch extends Object { self: Test_depmatch.type => +4 decls }
@@ -3934,6 +4167,9 @@ Occurrences:
 [6:15..6:18): foo -> _empty_/Test_depmatch.baz().(foo)
 [6:19..6:20): U -> local0
 [6:24..6:27): ??? -> scala/Predef.`???`().
+
+Diagnostics:
+[6:8..6:9): [warning] unused local definition
 
 expect/example-dir/FileInDir.scala
 ----------------------------------
@@ -4218,6 +4454,7 @@ Text => empty
 Language => Scala
 Symbols => 7 entries
 Occurrences => 9 entries
+Diagnostics => 1 entries
 
 Symbols:
 i9727/Test# => class Test extends Object { self: Test => +2 decls }
@@ -4238,6 +4475,9 @@ Occurrences:
 [3:12..3:16): Test -> i9727/Test#
 [4:4..4:5): b <- i9727/i9727$package.b.
 [4:12..4:16): Test -> i9727/Test#
+
+Diagnostics:
+[2:11..2:12): [warning] unused explicit parameter
 
 expect/i9782.scala
 ------------------
@@ -4635,6 +4875,7 @@ Text => empty
 Language => Scala
 Symbols => 50 entries
 Occurrences => 78 entries
+Diagnostics => 4 entries
 Synthetics => 2 entries
 
 Symbols:
@@ -4769,6 +5010,12 @@ Occurrences:
 [25:27..25:28): t <- local1
 [25:33..25:36): ??? -> scala/Predef.`???`().
 
+Diagnostics:
+[9:30..9:31): [warning] unused explicit parameter
+[9:36..9:37): [warning] unused explicit parameter
+[9:42..9:43): [warning] unused explicit parameter
+[21:11..21:12): [warning] unused explicit parameter
+
 Synthetics:
 [23:6..23:10):List => *.unapplySeq[Nothing]
 [24:19..24:23):List => *.unapplySeq[Nothing]
@@ -4783,6 +5030,7 @@ Text => empty
 Language => Scala
 Symbols => 143 entries
 Occurrences => 246 entries
+Diagnostics => 1 entries
 Synthetics => 1 entries
 
 Symbols:
@@ -5177,6 +5425,9 @@ Occurrences:
 [119:24..119:31): classOf -> scala/Predef.classOf().
 [119:32..119:38): Option -> scala/Option#
 [119:39..119:42): Int -> scala/Int#
+
+Diagnostics:
+[5:13..5:14): [warning] unused explicit parameter
 
 Synthetics:
 [68:20..68:24):@ann => *[Int]

@@ -4,13 +4,13 @@ package ast
 
 import dotty.tools.dotc.transform.{ExplicitOuter, Erasure}
 import typer.ProtoTypes
-import transform.SymUtils._
-import transform.TypeUtils._
-import core._
+import transform.SymUtils.*
+import transform.TypeUtils.*
+import core.*
 import Scopes.newScope
-import util.Spans._, Types._, Contexts._, Constants._, Names._, Flags._, NameOps._
-import Symbols._, StdNames._, Annotations._, Trees._, Symbols._
-import Decorators._, DenotTransformers._
+import util.Spans.*, Types.*, Contexts.*, Constants.*, Names.*, Flags.*, NameOps.*
+import Symbols.*, StdNames.*, Annotations.*, Trees.*, Symbols.*
+import Decorators.*, DenotTransformers.*
 import collection.{immutable, mutable}
 import util.{Property, SourceFile}
 import NameKinds.{TempResultName, OuterSelectName}
@@ -18,6 +18,7 @@ import typer.ConstFold
 
 import scala.annotation.tailrec
 import scala.collection.mutable.ListBuffer
+import scala.compiletime.uninitialized
 
 /** Some creators for typed trees */
 object tpd extends Trees.Instance[Type] with TypedTreeInfo {
@@ -57,14 +58,14 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
     case _: RefTree | _: GenericApply =>
       ta.assignType(untpd.TypeApply(fn, args), fn, args)
     case _ =>
-      assert(ctx.reporter.errorsReported)
+      assert(ctx.reporter.errorsReported, s"unexpected tree for type application: $fn")
       ta.assignType(untpd.TypeApply(fn, args), fn, args)
 
   def Literal(const: Constant)(using Context): Literal =
     ta.assignType(untpd.Literal(const))
 
   def unitLiteral(using Context): Literal =
-    Literal(Constant(()))
+    Literal(Constant(())).withAttachment(SyntheticUnit, ())
 
   def nullLiteral(using Context): Literal =
     Literal(Constant(null))
@@ -1284,6 +1285,21 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
       !(sym.is(Method) && sym.info.isInstanceOf[MethodOrPoly]) // if is a method it is parameterless
   }
 
+  /** A tree traverser that generates the the same import contexts as original typer for statements.
+   *  TODO: Should we align TreeMapWithPreciseStatContexts and also keep track of exprOwners?
+   */
+  abstract class TreeTraverserWithPreciseImportContexts extends TreeTraverser:
+    override def apply(x: Unit, trees: List[Tree])(using Context): Unit =
+      def recur(trees: List[Tree]): Unit = trees match
+        case (imp: Import) :: rest =>
+          traverse(rest)(using ctx.importContext(imp, imp.symbol))
+        case tree :: rest =>
+          traverse(tree)
+          traverse(rest)
+        case Nil =>
+      recur(trees)
+  end TreeTraverserWithPreciseImportContexts
+
   extension (xs: List[tpd.Tree])
     def tpes: List[Type] = xs match {
       case x :: xs1 => x.tpe :: xs1.tpes
@@ -1294,7 +1310,7 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
   trait TreeProvider {
     protected def computeRootTrees(using Context): List[Tree]
 
-    private var myTrees: List[Tree] | Null = _
+    private var myTrees: List[Tree] | Null = uninitialized
 
     /** Get trees defined by this provider. Cache them if -Yretain-trees is set. */
     def rootTrees(using Context): List[Tree] =
@@ -1518,6 +1534,25 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
           imported(sym, sel.imported, renamedOpt)
         }
     }
+  }
+
+  /** Creates the tuple containing the given elements */
+  def tupleTree(elems: List[Tree])(using Context): Tree = {
+    val arity = elems.length
+    if arity == 0 then
+      ref(defn.EmptyTupleModule)
+    else if arity <= Definitions.MaxTupleArity then
+      // TupleN[elem1Tpe, ...](elem1, ...)
+      ref(defn.TupleType(arity).nn.typeSymbol.companionModule)
+        .select(nme.apply)
+        .appliedToTypes(elems.map(_.tpe.widenIfUnstable))
+        .appliedToArgs(elems)
+    else
+      // TupleXXL.apply(elems*) // TODO add and use Tuple.apply(elems*) ?
+      ref(defn.TupleXXLModule)
+        .select(nme.apply)
+        .appliedToVarargs(elems.map(_.asInstance(defn.ObjectType)), TypeTree(defn.ObjectType))
+        .asInstance(defn.tupleType(elems.map(elem => elem.tpe.widenIfUnstable)))
   }
 
   /** Creates the tuple type tree representation of the type trees in `ts` */

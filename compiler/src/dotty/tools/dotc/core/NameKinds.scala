@@ -2,12 +2,12 @@ package dotty.tools
 package dotc
 package core
 
-import Names._
-import NameOps._
-import StdNames._
-import NameTags._
-import Contexts._
-import Decorators._
+import Names.*
+import NameOps.*
+import StdNames.*
+import NameTags.*
+import Contexts.*
+import Decorators.*
 
 import scala.annotation.internal.sharable
 
@@ -316,7 +316,6 @@ object NameKinds {
   val TailTempName: UniqueNameKind           = new UniqueNameKind("$tmp")
   val ExceptionBinderName: UniqueNameKind    = new UniqueNameKind("ex")
   val SkolemName: UniqueNameKind             = new UniqueNameKind("?")
-  val LiftedTreeName: UniqueNameKind         = new UniqueNameKind("liftedTree")
   val SuperArgName: UniqueNameKind           = new UniqueNameKind("$superArg$")
   val DocArtifactName: UniqueNameKind        = new UniqueNameKind("$doc")
   val UniqueInlineName: UniqueNameKind       = new UniqueNameKind("$i")

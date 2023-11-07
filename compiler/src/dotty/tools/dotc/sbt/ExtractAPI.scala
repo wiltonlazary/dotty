@@ -5,20 +5,20 @@ import scala.language.unsafeNulls
 
 import ExtractDependencies.internalError
 import ast.{Positioned, Trees, tpd}
-import core._
-import core.Decorators._
-import Annotations._
-import Contexts._
-import Flags._
-import Phases._
-import Trees._
-import Types._
-import Symbols._
-import Names._
-import NameOps._
+import core.*
+import core.Decorators.*
+import Annotations.*
+import Contexts.*
+import Flags.*
+import Phases.*
+import Trees.*
+import Types.*
+import Symbols.*
+import Names.*
+import NameOps.*
 import inlines.Inlines
 import transform.ValueClasses
-import transform.SymUtils._
+import transform.SymUtils.*
 import dotty.tools.io.File
 import java.io.PrintWriter
 
@@ -135,7 +135,7 @@ object ExtractAPI:
  *  http://www.scala-sbt.org/0.13/docs/Understanding-Recompilation.html#Hashing+an+API+representation
  */
 private class ExtractAPICollector(using Context) extends ThunkHolder {
-  import tpd._
+  import tpd.*
   import xsbti.api
 
   /** This cache is necessary for correctness, see the comment about inherited
@@ -566,7 +566,7 @@ private class ExtractAPICollector(using Context) extends ThunkHolder {
       case ExprType(resultType) =>
         withMarker(apiType(resultType), byNameMarker)
       case MatchType(bound, scrut, cases) =>
-        val s = combineApiTypes(apiType(bound) :: apiType(scrut) :: cases.map(apiType): _*)
+        val s = combineApiTypes(apiType(bound) :: apiType(scrut) :: cases.map(apiType)*)
         withMarker(s, matchMarker)
       case ConstantType(constant) =>
         api.Constant.of(apiType(constant.tpe), constant.stringValue)
@@ -614,7 +614,7 @@ private class ExtractAPICollector(using Context) extends ThunkHolder {
       apiType(lo), apiType(hi))
 
   def apiVariance(v: Int): api.Variance = {
-    import api.Variance._
+    import api.Variance.*
     if (v < 0) Contravariant
     else if (v > 0) Covariant
     else Invariant

@@ -2,33 +2,33 @@ package dotty.tools
 package dotc
 package typer
 
-import core._
+import core.*
 import ast.{Trees, tpd, untpd, desugar}
 import util.Stats.record
 import util.{SrcPos, NoSourcePosition}
-import Contexts._
-import Flags._
-import Symbols._
+import Contexts.*
+import Flags.*
+import Symbols.*
 import Denotations.Denotation
-import Types._
-import Decorators._
-import ErrorReporting._
-import Trees._
-import Names._
-import StdNames._
-import ContextOps._
+import Types.*
+import Decorators.*
+import ErrorReporting.*
+import Trees.*
+import Names.*
+import StdNames.*
+import ContextOps.*
 import NameKinds.DefaultGetterName
-import ProtoTypes._
-import Inferencing._
-import reporting._
-import transform.TypeUtils._
-import transform.SymUtils._
-import Nullables._, NullOpsDecorator.*
+import ProtoTypes.*
+import Inferencing.*
+import reporting.*
+import transform.TypeUtils.*
+import transform.SymUtils.*
+import Nullables.*, NullOpsDecorator.*
 import config.Feature
 
 import collection.mutable
 import config.Printers.{overload, typr, unapp}
-import TypeApplications._
+import TypeApplications.*
 import Annotations.Annotation
 
 import Constants.{Constant, IntTag}
@@ -38,7 +38,7 @@ import annotation.threadUnsafe
 import scala.util.control.NonFatal
 
 object Applications {
-  import tpd._
+  import tpd.*
 
   def extractorMember(tp: Type, name: Name)(using Context): SingleDenotation =
     tp.member(name).suchThat(sym => sym.info.isParameterless && sym.info.widenExpr.isValueType)
@@ -352,7 +352,7 @@ object Applications {
 trait Applications extends Compatibility {
   self: Typer & Dynamic =>
 
-  import Applications._
+  import Applications.*
   import tpd.{ cpy => _, _ }
   import untpd.cpy
 
@@ -976,7 +976,7 @@ trait Applications extends Compatibility {
             val resultType =
               if !originalResultType.isRef(defn.ObjectClass) then originalResultType
               else AvoidWildcardsMap()(proto.resultType.deepenProtoTrans) match
-                case SelectionProto(nme.asInstanceOf_, PolyProto(_, resTp), _, _) => resTp
+                case SelectionProto(nme.asInstanceOf_, PolyProto(_, resTp), _, _, _) => resTp
                 case resTp if isFullyDefined(resTp, ForceDegree.all) => resTp
                 case _ => defn.ObjectType
             val methType = MethodType(proto.typedArgs().map(_.tpe.widen), resultType)
@@ -1295,15 +1295,22 @@ trait Applications extends Compatibility {
 
     /** Report errors buffered in state.
      *  @pre state has errors to report
-     *  If there is a single error stating that "unapply" is not a member, print
-     *  the more informative "notAnExtractor" message instead.
+     *  If the last reported error states that "unapply" is not a member, report
+     *  the more informative `NotAnExtractor` message instead.
+     *  If the last reported error states that the qualifier was not found, report
+     *  the more informative `ExtractorNotFound` message instead.
      */
     def reportErrors(tree: Tree, state: TyperState): Tree =
       assert(state.reporter.hasErrors)
-      if saysNotFound(state, nme.unapply) then notAnExtractor(tree)
-      else
-        state.reporter.flush()
-        tree
+      if saysNotFound(state, nme.unapply) then
+        notAnExtractor(tree)
+      else qual match
+        case qual: Ident if saysNotFound(state, qual.name) =>
+          report.error(ExtractorNotFound(qual.name), tree.srcPos)
+          tree
+        case _ =>
+          state.reporter.flush()
+          tree
 
     /** If this is a term ref tree, try to typecheck with its type name.
      *  If this refers to a type alias, follow the alias, and if
@@ -1773,14 +1780,20 @@ trait Applications extends Compatibility {
       def winsType2 = isAsSpecific(alt2, tp2, alt1, tp1)
 
       overload.println(i"compare($alt1, $alt2)? $tp1 $tp2 $ownerScore $winsType1 $winsType2")
-      if (ownerScore == 1)
-        if (winsType1 || !winsType2) 1 else 0
-      else if (ownerScore == -1)
-        if (winsType2 || !winsType1) -1 else 0
-      else if (winsType1)
-        if (winsType2) 0 else 1
+      if winsType1 && winsType2
+          && alt1.widenExpr.isStable && (alt1.widenExpr frozen_=:= alt2.widenExpr)
+      then
+        // alternatives are the same after following ExprTypes, pick one of them
+        // (prefer the one that is not a method, but that's arbitrary).
+        if alt1.widenExpr =:= alt2 then -1 else 1
+      else if ownerScore == 1 then
+        if winsType1 || !winsType2 then 1 else 0
+      else if ownerScore == -1 then
+        if winsType2 || !winsType1 then -1 else 0
+      else if winsType1 then
+        if winsType2 then 0 else 1
       else
-        if (winsType2) -1 else 0
+        if winsType2 then -1 else 0
     }
 
     if alt1.symbol.is(ConstructorProxy) && !alt2.symbol.is(ConstructorProxy) then -1
@@ -2219,7 +2232,8 @@ trait Applications extends Compatibility {
     }
     val mapped = reverseMapping.map(_._1)
     overload.println(i"resolve mapped: ${mapped.map(_.widen)}%, % with $pt")
-    resolveOverloaded(mapped, pt).map(reverseMapping.toMap)
+    resolveOverloaded(mapped, pt)(using ctx.retractMode(Mode.SynthesizeExtMethodReceiver))
+      .map(reverseMapping.toMap)
 
   /** Try to typecheck any arguments in `pt` that are function values missing a
    *  parameter type. If the formal parameter types corresponding to a closure argument

@@ -3,13 +3,13 @@ import annotation.capability
 
 object Test1:
 
-  def usingLogFile[sealed T](op: FileOutputStream => T): T =
+  def usingLogFile[T](op: (local: caps.Cap) ?-> FileOutputStream => T): T =
     val logFile = FileOutputStream("log")
     val result = op(logFile)
     logFile.close()
     result
 
-  val later = usingLogFile { f => () => f.write(0) }
+  private val later = usingLogFile { f => () => f.write(0) }  // OK, `f` has global lifetime
   later()
 
 object Test2:
@@ -28,25 +28,15 @@ object Test2:
   private val later2 = usingLogFile { f => Cell(() => f.write(0)) } // error
   later2.x()
 
-  var later3: () => Unit = () => ()  // error
-  usingLogFile { f => later3 = () => f.write(0) }
+  var later3: () ->{cap[`<root>`]} Unit = () => ()
+  usingLogFile { f => later3 = () => f.write(0) }  // error
   later3()
 
-  var later4: Cell[() => Unit] = Cell(() => ())  // error
-  usingLogFile { f => later4 = Cell(() => f.write(0)) }
+  var later4: Cell[() ->{cap[`<root>`]} Unit] = Cell(() => ())
+  usingLogFile { f => later4 = Cell(() => f.write(0)) }  // error
   later4.x()
 
 object Test3:
-
-  def usingLogFile[sealed T](op: FileOutputStream^ => T) =
-    val logFile = FileOutputStream("log")
-    val result = op(logFile)
-    logFile.close()
-    result
-
-  val later = usingLogFile { f => () => f.write(0) } // error
-
-object Test4:
   class Logger(f: OutputStream^):
     def log(msg: String): Unit = ???
 
@@ -62,12 +52,11 @@ object Test4:
     val later = usingFile("out", f => (y: Int) => xs.foreach(x => f.write(x + y))) // error
     later(1)
 
-
   def usingLogger[sealed T](f: OutputStream^, op: Logger^{f} => T): T =
     val logger = Logger(f)
     op(logger)
 
   def test =
-    val later = usingFile("logfile",            // error
-      usingLogger(_, l => () => l.log("test"))) // ok, since we can widen `l` to `file` instead of to `cap`
+    val later = usingFile("logfile", // error !!! but should be ok, since we can widen `l` to `file` instead of to `cap`
+      usingLogger(_, l => () => l.log("test")))
     later()

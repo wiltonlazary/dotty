@@ -1,21 +1,21 @@
 package dotty.tools.dotc
 package printing
 
-import core._
-import Texts._, Types._, Flags._, Names._, Symbols._, NameOps._, Constants._, Denotations._
-import StdNames._
-import Contexts._
+import core.*
+import Texts.*, Types.*, Flags.*, Names.*, Symbols.*, NameOps.*, Constants.*, Denotations.*
+import StdNames.*
+import Contexts.*
 import Scopes.Scope, Denotations.Denotation, Annotations.Annotation
 import StdNames.nme
-import ast.Trees._
-import typer.Implicits._
+import ast.Trees.*
+import typer.Implicits.*
 import typer.ImportInfo
 import Variances.varianceSign
 import util.SourcePosition
 import scala.util.control.NonFatal
 import scala.annotation.switch
 import config.{Config, Feature}
-import cc.{CapturingType, EventuallyCapturingType, CaptureSet, isBoxed}
+import cc.{CapturingType, RetainingType, CaptureSet, isBoxed, levelOwner, retainedElems}
 
 class PlainPrinter(_ctx: Context) extends Printer {
 
@@ -150,11 +150,25 @@ class PlainPrinter(_ctx: Context) extends Printer {
     + defn.FromJavaObjectSymbol
 
   def toTextCaptureSet(cs: CaptureSet): Text =
-    if printDebug && !cs.isConst then cs.toString
-    else if ctx.settings.YccDebug.value then cs.show
+    if printDebug && ctx.settings.YccDebug.value && !cs.isConst then cs.toString
     else if cs == CaptureSet.Fluid then "<fluid>"
-    else if !cs.isConst && cs.elems.isEmpty then "?"
-    else "{" ~ Text(cs.elems.toList.map(toTextCaptureRef), ", ") ~ "}"
+    else
+      val core: Text =
+        if !cs.isConst && cs.elems.isEmpty then "?"
+        else "{" ~ Text(cs.elems.toList.map(toTextCaptureRef), ", ") ~ "}"
+           //     ~ Str("?").provided(!cs.isConst)
+      core ~ cs.optionalInfo
+
+  private def toTextRetainedElem[T <: Untyped](ref: Tree[T]): Text = ref match
+    case ref: RefTree[?] if ref.typeOpt.exists =>
+      toTextCaptureRef(ref.typeOpt)
+    case Apply(fn, Literal(str) :: Nil) if fn.symbol == defn.Caps_capIn =>
+      s"cap[${str.stringValue}]"
+    case _ =>
+      toText(ref)
+
+  private def toTextRetainedElems[T <: Untyped](refs: List[Tree[T]]): Text =
+    "{" ~ Text(refs.map(ref => toTextRetainedElem(ref))) ~ "}"
 
   /** Print capturing type, overridden in RefinedPrinter to account for
    *  capturing function types.
@@ -164,15 +178,23 @@ class PlainPrinter(_ctx: Context) extends Printer {
       boxText ~ toTextLocal(parent) ~ "^"
       ~ (refsText provided refsText != rootSetText)
 
-  final protected def rootSetText = Str("{cap}")
+  final protected def rootSetText = Str("{cap}") // TODO Use disambiguation
+
+  // Lazy version of isRootCapability; used to not force completers when printing
+  private def isRootCap(tp: CaptureRef): Boolean = tp match
+    case tp: TermRef => tp.symbol.isCompleted && tp.isRootCapability
+    case _ => tp.isRootCapability
 
   def toText(tp: Type): Text = controlled {
     homogenize(tp) match {
       case tp: TypeType =>
         toTextRHS(tp)
       case tp: TermRef
-      if !tp.denotationIsCurrent && !homogenizedView || // always print underlying when testing picklers
-         tp.symbol.is(Module) || tp.symbol.name == nme.IMPORT =>
+      if !tp.denotationIsCurrent
+          && !homogenizedView // always print underlying when testing picklers
+          && !isRootCap(tp)
+          || tp.symbol.is(Module)
+          || tp.symbol.name == nme.IMPORT =>
         toTextRef(tp) ~ ".type"
       case tp: TermRef if tp.denot.isOverloaded =>
         "<overloaded " ~ toTextRef(tp) ~ ">"
@@ -220,10 +242,23 @@ class PlainPrinter(_ctx: Context) extends Printer {
           keywordStr(" match ") ~ "{" ~ casesText ~ "}" ~
           (" <: " ~ toText(bound) provided !bound.isAny)
         }.close
-      case tp @ EventuallyCapturingType(parent, refs) =>
+      case tp @ CapturingType(parent, refs) =>
         val boxText: Text = Str("box ") provided tp.isBoxed //&& ctx.settings.YccDebug.value
-        val refsText = if refs.isUniversal then rootSetText else toTextCaptureSet(refs)
+        val rootsInRefs = refs.elems.filter(isRootCap(_)).toList
+        val showAsCap = rootsInRefs match
+          case (tp: TermRef) :: Nil =>
+            tp.symbol == defn.captureRoot && (refs.elems.size == 1 || !printDebug)
+              // {caps.cap} gets printed as `{cap}` even under printDebug as long as there
+              // are no other elements in the set
+          case _ =>
+            false
+        val refsText = if showAsCap then rootSetText else toTextCaptureSet(refs)
         toTextCapturing(parent, refsText, boxText)
+      case tp @ RetainingType(parent, refs) =>
+        val refsText = refs match
+          case ref :: Nil if ref.symbol == defn.captureRoot => rootSetText
+          case _ => toTextRetainedElems(refs)
+        toTextCapturing(parent, refsText, "") ~ Str("R").provided(printDebug)
       case tp: PreviousErrorType if ctx.settings.XprintTypes.value =>
         "<error>" // do not print previously reported error message because they may try to print this error type again recuresevely
       case tp: ErrorType =>
@@ -246,8 +281,10 @@ class PlainPrinter(_ctx: Context) extends Printer {
         }
       case ExprType(restp) =>
         def arrowText: Text = restp match
-          case ct @ EventuallyCapturingType(parent, refs) if ct.annot.symbol == defn.RetainsByNameAnnot =>
-            if refs.isUniversal then Str("=>") else Str("->") ~ toTextCaptureSet(refs)
+          case AnnotatedType(parent, ann) if ann.symbol == defn.RetainsByNameAnnot =>
+            val refs = ann.tree.retainedElems
+            if refs.exists(_.symbol == defn.captureRoot) then Str("=>")
+            else Str("->") ~ toTextRetainedElems(refs)
           case _ =>
             if Feature.pureFunsEnabled then "->" else "=>"
         changePrec(GlobalPrec)(arrowText ~ " " ~ toText(restp))
@@ -324,7 +361,7 @@ class PlainPrinter(_ctx: Context) extends Printer {
    */
   protected def idString(sym: Symbol): String =
     (if (showUniqueIds || Printer.debugPrintUnique) "#" + sym.id else "") +
-    (if (showNestingLevel) "%" + sym.nestingLevel else "")
+    (if showNestingLevel then "%" + sym.nestingLevel else "")
 
   def nameString(sym: Symbol): String =
     simpleNameString(sym) + idString(sym) // + "<" + (if (sym.exists) sym.owner else "") + ">"
@@ -354,7 +391,9 @@ class PlainPrinter(_ctx: Context) extends Printer {
   def toTextRef(tp: SingletonType): Text = controlled {
     tp match {
       case tp: TermRef =>
-        toTextPrefixOf(tp) ~ selectionString(tp)
+        if tp.symbol.name == nme.LOCAL_CAPTURE_ROOT then  // TODO: Move to toTextCaptureRef
+          Str(s"cap[${nameString(tp.localRootOwner)}]")
+        else toTextPrefixOf(tp) ~ selectionString(tp)
       case tp: ThisType =>
         nameString(tp.cls) + ".this"
       case SuperType(thistpe: SingletonType, _) =>
@@ -558,6 +597,8 @@ class PlainPrinter(_ctx: Context) extends Printer {
 
   def extendedLocationText(sym: Symbol): Text =
     if (!sym.exists) ""
+    else if isEmptyPrefix(sym.owner) then
+      " in the empty package"
     else {
       def recur(ownr: Symbol, innerLocation: String): Text = {
         def nextOuter(innerKind: String): Text =

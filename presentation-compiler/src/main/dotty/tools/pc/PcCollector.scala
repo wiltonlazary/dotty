@@ -69,7 +69,7 @@ abstract class PcCollector[T](
     case _ => rawPath
   def collect(
       parent: Option[Tree]
-  )(tree: Tree, pos: SourcePosition, symbol: Option[Symbol]): T
+  )(tree: Tree| EndMarker, pos: SourcePosition, symbol: Option[Symbol]): T
 
   /**
    * @return (adjusted position, should strip backticks)
@@ -111,6 +111,33 @@ abstract class PcCollector[T](
   end adjust
 
   def symbolAlternatives(sym: Symbol) =
+    def member(parent: Symbol) = parent.info.member(sym.name).symbol
+    def primaryConstructorTypeParam(owner: Symbol) =
+      for
+        typeParams <- owner.primaryConstructor.paramSymss.headOption
+        param <- typeParams.find(_.name == sym.name)
+        if (param.isType)
+      yield param
+    def additionalForEnumTypeParam(enumClass: Symbol) =
+      if enumClass.is(Flags.Enum) then
+        val enumOwner =
+          if enumClass.is(Flags.Case)
+          then
+            Option.when(member(enumClass).is(Flags.Synthetic))(
+              enumClass.maybeOwner.companionClass
+            )
+          else Some(enumClass)
+        enumOwner.toSet.flatMap { enumOwner =>
+          val symsInEnumCases = enumOwner.children.toSet.flatMap(enumCase =>
+            if member(enumCase).is(Flags.Synthetic)
+            then primaryConstructorTypeParam(enumCase)
+            else None
+          )
+          val symsInEnumOwner =
+            primaryConstructorTypeParam(enumOwner).toSet + member(enumOwner)
+          symsInEnumCases ++ symsInEnumOwner
+        }
+      else Set.empty
     val all =
       if sym.is(Flags.ModuleClass) then
         Set(sym, sym.companionModule, sym.companionModule.companion)
@@ -129,7 +156,11 @@ abstract class PcCollector[T](
         ) ++ sym.allOverriddenSymbols.toSet
       // type used in primary constructor will not match the one used in the class
       else if sym.isTypeParam && sym.owner.isPrimaryConstructor then
-        Set(sym, sym.owner.owner.info.member(sym.name).symbol)
+        Set(sym, member(sym.maybeOwner.maybeOwner))
+          ++ additionalForEnumTypeParam(sym.maybeOwner.maybeOwner)
+      else if sym.isTypeParam then
+        primaryConstructorTypeParam(sym.maybeOwner).toSet
+          ++ additionalForEnumTypeParam(sym.maybeOwner) + sym
       else Set(sym)
     all.filter(s => s != NoSymbol && !s.isError)
   end symbolAlternatives
@@ -169,6 +200,12 @@ abstract class PcCollector[T](
         val realName = arg.name.stripModuleClassSuffix.lastPart
         if pos.span.start > arg.span.start && pos.span.end < arg.span.point + realName.length
         then
+          val length = realName.toString.backticked.length()
+          val pos = arg.sourcePos.withSpan(
+            arg.span
+              .withEnd(arg.span.start + length)
+              .withPoint(arg.span.start)
+          )
           appl.symbol.paramSymss.flatten.find(_.name == arg.name).map { s =>
             // if it's a case class we need to look for parameters also
             if caseClassSynthetics(s.owner.name) && s.owner.is(Flags.Synthetic)
@@ -180,9 +217,9 @@ abstract class PcCollector[T](
                   s.owner.owner.info.member(s.name).symbol
                 )
                   .filter(_ != NoSymbol),
-                arg.sourcePos,
+                pos,
               )
-            else (Set(s), arg.sourcePos)
+            else (Set(s), pos)
           }
         else None
         end if
@@ -386,7 +423,7 @@ abstract class PcCollector[T](
         parent: Option[Tree]
     ): Set[T] =
       def collect(
-          tree: Tree,
+          tree: Tree | EndMarker,
           pos: SourcePosition,
           symbol: Option[Symbol] = None
       ) =
@@ -409,7 +446,7 @@ abstract class PcCollector[T](
          * All select statements such as:
          * val a = hello.<<b>>
          */
-        case sel: Select 
+        case sel: Select
           if sel.span.isCorrect && filter(sel) &&
             !isForComprehensionMethod(sel) =>
           occurrences + collect(
@@ -424,6 +461,9 @@ abstract class PcCollector[T](
         case df: NamedDefTree
             if df.span.isCorrect && df.nameSpan.isCorrect &&
               filter(df) && !isGeneratedGiven(df) =>
+          def collectEndMarker =
+            EndMarker.getPosition(df, pos, sourceText).map:
+              collect(EndMarker(df.symbol), _)
           val annots = collectTrees(df.mods.annotations)
           val traverser =
             new PcCollector.DeepFolderWithParent[Set[T]](
@@ -433,7 +473,7 @@ abstract class PcCollector[T](
             occurrences + collect(
               df,
               pos.withSpan(df.nameSpan)
-            )
+            ) ++ collectEndMarker
           ) { case (set, tree) =>
             traverser(set, tree)
           }
@@ -458,6 +498,7 @@ abstract class PcCollector[T](
           }
           val named = args.map { arg =>
             val realName = arg.name.stripModuleClassSuffix.lastPart
+            val length = realName.toString.backticked.length()
             val sym = apply.symbol.paramSymss.flatten
               .find(_.name == realName)
             collect(
@@ -465,7 +506,7 @@ abstract class PcCollector[T](
               pos
                 .withSpan(
                   arg.span
-                    .withEnd(arg.span.start + realName.length)
+                    .withEnd(arg.span.start + length)
                     .withPoint(arg.span.start)
                 ),
               sym
@@ -597,3 +638,34 @@ case class ExtensionParamOccurence(
     sym: Symbol,
     methods: List[untpd.Tree]
 )
+
+case class EndMarker(symbol: Symbol)
+
+object EndMarker:
+  /**
+    * Matches end marker line from start to the name's beginning.
+    * E.g.
+    *    end /* some comment */
+    */
+  private val endMarkerRegex = """.*end(/\*.*\*/|\s)+""".r
+  def getPosition(df: NamedDefTree, pos: SourcePosition, sourceText: String)(
+      implicit ct: Context
+  ): Option[SourcePosition] =
+    val name = df.name.toString()
+    val endMarkerLine =
+      sourceText.slice(df.span.start, df.span.end).split('\n').last
+    val index = endMarkerLine.length() - name.length()
+    if index < 0 then None
+    else
+      val (possiblyEndMarker, possiblyEndMarkerName) =
+        endMarkerLine.splitAt(index)
+      Option.when(
+        possiblyEndMarkerName == name &&
+          endMarkerRegex.matches(possiblyEndMarker)
+      )(
+        pos
+          .withStart(df.span.end - name.length())
+          .withEnd(df.span.end)
+      )
+  end getPosition
+end EndMarker

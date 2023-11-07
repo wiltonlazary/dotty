@@ -4,7 +4,7 @@ package util
 
 import scala.annotation.internal.sharable
 
-import core.Contexts._
+import core.Contexts.*
 import collection.mutable
 
 @sharable object Stats {
@@ -32,7 +32,7 @@ import collection.mutable
       hits(name) += n
     }
 
-  def doRecordSize(fn: String, coll: scala.collection.Iterable[_]): coll.type =
+  def doRecordSize(fn: String, coll: scala.collection.Iterable[?]): coll.type =
     doRecord(fn, coll.size)
     coll
 

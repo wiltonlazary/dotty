@@ -7,7 +7,7 @@ import Contexts.*
 import ast.tpd.*
 import util.SourcePosition
 
-import Decorators._, printing.SyntaxHighlighting
+import Decorators.*, printing.SyntaxHighlighting
 
 import scala.collection.mutable
 
@@ -77,7 +77,7 @@ object Trace:
    *  pos.source must exist
    */
   private def positionMarker(pos: SourcePosition): String =
-    val trimmed = pos.lineContent.takeWhile(c => c.isWhitespace).length
+    val trimmed = pos.source.lineContent(pos.start).takeWhile(c => c.isWhitespace).length
     val padding = pos.startColumnPadding.substring(trimmed).nn + "   "
     val carets =
       if (pos.startLine == pos.endLine)

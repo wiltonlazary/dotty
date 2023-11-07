@@ -2,11 +2,11 @@ package dotty.tools
 package dotc
 package core
 
-import Types._
-import Contexts._
-import Symbols._
-import Decorators._
-import Flags._
+import Types.*
+import Contexts.*
+import Symbols.*
+import Decorators.*
+import Flags.*
 import config.Config
 import config.Printers.typr
 import typer.ProtoTypes.{newTypeVar, representedParamRef}
@@ -54,7 +54,7 @@ trait ConstraintHandling {
   protected var homogenizeArgs: Boolean = false
 
   /** We are currently comparing type lambdas. Used as a flag for
-   *  optimization: when `false`, no need to do an expensive `pruneLambdaParams`
+   *  optimization: when `false`, no need to do an expensive `avoidLambdaParams`
    */
   protected var comparedTypeLambdas: Set[TypeLambda] = Set.empty
 
@@ -689,7 +689,7 @@ trait ConstraintHandling {
     case tp: AndType =>
       tp.derivedAndType(tp.tp1.hardenUnions, tp.tp2.hardenUnions)
     case tp: RefinedType =>
-      tp.derivedRefinedType(tp.parent.hardenUnions, tp.refinedName, tp.refinedInfo)
+      tp.derivedRefinedType(parent = tp.parent.hardenUnions)
     case tp: RecType =>
       tp.rebind(tp.parent.hardenUnions)
     case tp: HKTypeLambda =>

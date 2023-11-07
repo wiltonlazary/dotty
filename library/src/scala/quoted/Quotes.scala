@@ -8,9 +8,9 @@ import scala.reflect.TypeTest
  *
  *  Usage:
  *  ```scala
- *  import scala.quoted._
+ *  import scala.quoted.*
  *  def myExpr[T](using Quotes): Expr[T] = {
- *     import quotes.reflect._
+ *     import quotes.reflect.*
  *     ???
  *  }
  *  ```
@@ -24,7 +24,7 @@ transparent inline def quotes(using q: Quotes): q.type = q
  *  This API does not have the static type guarantees that `Expr` and `Type` provide.
  *  `Quotes` are generated from an enclosing `${ ... }` or `scala.staging.run`. For example:
  *  ```scala sc:nocompile
- *  import scala.quoted._
+ *  import scala.quoted.*
  *  inline def myMacro: Expr[T] =
  *    ${ /* (quotes: Quotes) ?=> */ myExpr }
  *  def myExpr(using Quotes): Expr[T] =
@@ -105,9 +105,9 @@ trait Quotes { self: runtime.QuoteUnpickler & runtime.QuoteMatching =>
    *
    *  Usage:
    *  ```scala
-   *  import scala.quoted._
+   *  import scala.quoted.*
    *  def f(expr: Expr[Int])(using Quotes) =
-   *    import quotes.reflect._
+   *    import quotes.reflect.*
    *    val ast: Term = expr.asTerm
    *    ???
    *  ```
@@ -2354,10 +2354,10 @@ trait Quotes { self: runtime.QuoteUnpickler & runtime.QuoteMatching =>
      *  `ParamClause` encodes the following enumeration
      *  ```scala
      *  //{
-     *  import scala.quoted._
+     *  import scala.quoted.*
      *  def inQuotes(using Quotes) = {
      *    val q: Quotes = summon[Quotes]
-     *    import q.reflect._
+     *    import q.reflect.*
      *  //}
      *    enum ParamClause:
      *      case TypeParamClause(params: List[TypeDef])
@@ -2606,10 +2606,10 @@ trait Quotes { self: runtime.QuoteUnpickler & runtime.QuoteMatching =>
         *  Usage:
         *  ```scala
         *  //{
-        *  import scala.quoted._
+        *  import scala.quoted.*
         *  def f(using Quotes) = {
         *    val q: Quotes = summon[Quotes]
-        *    import q.reflect._
+        *    import q.reflect.*
         *    val typeRepr: TypeRepr = ???
         *  //}
         *    typeRepr.asType match
@@ -2651,6 +2651,9 @@ trait Quotes { self: runtime.QuoteUnpickler & runtime.QuoteMatching =>
 
         /** Follow aliases, annotated types until type is no longer alias type, annotated type. */
         def dealias: TypeRepr
+
+        /** Follow non-opaque aliases, annotated types until type is no longer alias type, annotated type. */
+        def dealiasKeepOpaques: TypeRepr
 
         /** A simplified version of this type which is equivalent wrt =:= to this type.
         *  Reduces typerefs, applied match types, and and or types.
@@ -3258,8 +3261,16 @@ trait Quotes { self: runtime.QuoteUnpickler & runtime.QuoteMatching =>
     /** Extension methods of `TypeLambda` */
     trait TypeLambdaMethods:
       extension (self: TypeLambda)
+        /** Reference to the i-th parameter */
         def param(idx: Int) : TypeRepr
+        /** Type bounds of the i-th parameter */
         def paramBounds: List[TypeBounds]
+        /** Variance flags for the i-th parameter
+         *
+         *  Variance flags can be one of `Flags.{Covariant, Contravariant, EmptyFlags}`.
+         */
+        @experimental
+        def paramVariances: List[Flags]
       end extension
     end TypeLambdaMethods
 
@@ -3734,7 +3745,7 @@ trait Quotes { self: runtime.QuoteUnpickler & runtime.QuoteMatching =>
        *  ```scala
        *  //{
        *  given Quotes = ???
-       *  import quotes.reflect._
+       *  import quotes.reflect.*
        *  //}
        *  val moduleName: String = Symbol.freshName("MyModule")
        *  val parents = List(TypeTree.of[Object])
@@ -3756,7 +3767,7 @@ trait Quotes { self: runtime.QuoteUnpickler & runtime.QuoteMatching =>
        *  ```scala
        *  //{
        *  given Quotes = ???
-       *  import quotes.reflect._
+       *  import quotes.reflect.*
        *  //}
        *  '{
        *    object MyModule$macro$1 extends Object:
@@ -3808,7 +3819,7 @@ trait Quotes { self: runtime.QuoteUnpickler & runtime.QuoteMatching =>
       *  @param parent The owner of the method
       *  @param name The name of the method
       *  @param tpe The type of the method (MethodType, PolyType, ByNameType)
-      *  @param flags extra flags to with which the symbol should be constructed. `Method` flag will be added. Can be `Private | Protected | Override | Deferred | Final | Method | Implicit | Given | Local | JavaStatic`
+      *  @param flags extra flags to with which the symbol should be constructed. `Method` flag will be added. Can be `Private | Protected | Override | Deferred | Final | Method | Implicit | Given | Local | JavaStatic | Synthetic | Artifact`
       *  @param privateWithin the symbol within which this new method symbol should be private. May be noSymbol.
       */
       // Keep: `flags` doc aligned with QuotesImpl's `validMethodFlags`
@@ -3825,7 +3836,7 @@ trait Quotes { self: runtime.QuoteUnpickler & runtime.QuoteMatching =>
       *  @param parent The owner of the val/var/lazy val
       *  @param name The name of the val/var/lazy val
       *  @param tpe The type of the val/var/lazy val
-      *  @param flags extra flags to with which the symbol should be constructed. Can be `Private | Protected | Override | Deferred | Final | Param | Implicit | Lazy | Mutable | Local | ParamAccessor | Module | Package | Case | CaseAccessor | Given | Enum | JavaStatic`
+      *  @param flags extra flags to with which the symbol should be constructed. Can be `Private | Protected | Override | Deferred | Final | Param | Implicit | Lazy | Mutable | Local | ParamAccessor | Module | Package | Case | CaseAccessor | Given | Enum | JavaStatic | Synthetic | Artifact`
       *  @param privateWithin the symbol within which this new method symbol should be private. May be noSymbol.
       *  @note As a macro can only splice code into the point at which it is expanded, all generated symbols must be
       *        direct or indirect children of the reflection context's owner.
@@ -4078,7 +4089,16 @@ trait Quotes { self: runtime.QuoteUnpickler & runtime.QuoteMatching =>
         /** Fields of a case class type -- only the ones declared in primary constructor */
         def caseFields: List[Symbol]
 
+        /** Is this the symbol of a type parameter */
         def isTypeParam: Boolean
+
+        /** Variance flags for of this type parameter.
+         *
+         *  Variance flags can be one of `Flags.{Covariant, Contravariant, EmptyFlags}`.
+         *  If this is not the symbol of a type parameter the result is `Flags.EmptyFlags`.
+         */
+        @experimental
+        def paramVariance: Flags
 
         /** Signature of this definition */
         def signature: Signature
@@ -4102,10 +4122,10 @@ trait Quotes { self: runtime.QuoteUnpickler & runtime.QuoteMatching =>
          *  Usages:
          *  ```scala
          *  def rhsExpr(using q: Quotes): Expr[Unit] =
-         *    import q.reflect._
+         *    import q.reflect.*
          *    '{ val y = ???; (y, y) }
          *  def aValDef(using q: Quotes)(owner: q.reflect.Symbol) =
-         *    import q.reflect._
+         *    import q.reflect.*
          *    val sym = Symbol.newVal(owner, "x", TypeRepr.of[Unit], Flags.EmptyFlags, Symbol.noSymbol)
          *    val rhs = rhsExpr(using sym.asQuotes).asTerm
          *    ValDef(sym, Some(rhs))
@@ -4114,7 +4134,7 @@ trait Quotes { self: runtime.QuoteUnpickler & runtime.QuoteMatching =>
          *  ```scala
          *  //{
          *  def inQuotes(using q: Quotes) = {
-         *    import q.reflect._
+         *    import q.reflect.*
          *  //}
          *    new TreeMap:
          *      override def transformTerm(tree: Term)(owner: Symbol): Term =
@@ -4337,7 +4357,6 @@ trait Quotes { self: runtime.QuoteUnpickler & runtime.QuoteMatching =>
       def FunctionClass(arity: Int, isContextual: Boolean): Symbol
 
       /** The `scala.PolyFunction` built-in trait. */
-      @experimental
       def PolyFunctionClass: Symbol
 
       /** Function-like object that maps arity to symbols for classes `scala.TupleX`.
@@ -4399,9 +4418,9 @@ trait Quotes { self: runtime.QuoteUnpickler & runtime.QuoteMatching =>
       /** Is this an abstract override method?
        *
        *  This corresponds to a definition declared as "abstract override def" in the source.
-       * See https://stackoverflow.com/questions/23645172/why-is-abstract-override-required-not-override-alone-in-subtrait for examples.
+       *  See https://stackoverflow.com/questions/23645172/why-is-abstract-override-required-not-override-alone-in-subtrait for examples.
        */
-      @experimental def AbsOverride: Flags
+      def AbsOverride: Flags
 
       /** Is this generated by Scala compiler.
        *  Corresponds to ACC_SYNTHETIC in the JVM.
@@ -4730,7 +4749,7 @@ trait Quotes { self: runtime.QuoteUnpickler & runtime.QuoteMatching =>
     *  ```scala
     *  //{
     *  def inQuotes(using q: Quotes) = {
-    *    import q.reflect._
+    *    import q.reflect.*
     *  //}
     *    class MyTreeAccumulator[X] extends TreeAccumulator[X] {
     *      def foldTree(x: X, tree: Tree)(owner: Symbol): X = ???
@@ -4843,7 +4862,7 @@ trait Quotes { self: runtime.QuoteUnpickler & runtime.QuoteMatching =>
     *  ```scala
     *  //{
     *  def inQuotes(using q: Quotes) = {
-    *    import q.reflect._
+    *    import q.reflect.*
     *  //}
     *    class MyTraverser extends TreeTraverser {
     *      override def traverseTree(tree: Tree)(owner: Symbol): Unit = ???
@@ -4869,7 +4888,7 @@ trait Quotes { self: runtime.QuoteUnpickler & runtime.QuoteMatching =>
     *  ```scala
     *  //{
     *  def inQuotes(using q: Quotes) = {
-    *    import q.reflect._
+    *    import q.reflect.*
     *  //}
     *    class MyTreeMap extends TreeMap {
     *      override def transformTree(tree: Tree)(owner: Symbol): Tree = ???

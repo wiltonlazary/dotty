@@ -2,12 +2,12 @@ package dotty.tools
 package dotc
 package config
 
-import core._
-import Contexts._, Symbols._, Names._
+import core.*
+import Contexts.*, Symbols.*, Names.*
 import StdNames.nme
 import Decorators.*
 import util.{SrcPos, NoSourcePosition}
-import SourceVersion._
+import SourceVersion.*
 import reporting.Message
 import NameKinds.QualifiedName
 
@@ -26,10 +26,10 @@ object Feature:
   val dependent = experimental("dependent")
   val erasedDefinitions = experimental("erasedDefinitions")
   val symbolLiterals = deprecated("symbolLiterals")
+  val ascriptionVarargsUnpacking = deprecated("ascriptionVarargsUnpacking")
   val fewerBraces = experimental("fewerBraces")
   val saferExceptions = experimental("saferExceptions")
   val clauseInterleaving = experimental("clauseInterleaving")
-  val relaxedExtensionImports = experimental("relaxedExtensionImports")
   val pureFunctions = experimental("pureFunctions")
   val captureChecking = experimental("captureChecking")
   val into = experimental("into")
@@ -103,8 +103,8 @@ object Feature:
 
   /** Is captureChecking enabled for any of the currently compiled compilation units? */
   def ccEnabledSomewhere(using Context) =
-    enabledBySetting(captureChecking)
-    || ctx.run != null && ctx.run.nn.ccImportEncountered
+    if ctx.run != null then ctx.run.nn.ccEnabledSomewhere
+    else enabledBySetting(captureChecking)
 
   def sourceVersionSetting(using Context): SourceVersion =
     SourceVersion.valueOf(ctx.settings.source.value)
@@ -174,7 +174,7 @@ object Feature:
       true
     else if fullFeatureName == captureChecking then
       ctx.compilationUnit.needsCaptureChecking = true
-      if ctx.run != null then ctx.run.nn.ccImportEncountered = true
+      if ctx.run != null then ctx.run.nn.ccEnabledSomewhere = true
       true
     else
       false

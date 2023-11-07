@@ -308,7 +308,7 @@ class DottyBytecodeTests extends DottyBytecodeTest {
         |import java.nio.file._
         |class Test {
         |  def test(xs: Array[String]) = {
-        |     val p4 = Paths.get("Hello", xs: _*)
+        |     val p4 = Paths.get("Hello", xs*)
         |  }
         |}
       """.stripMargin
@@ -1677,6 +1677,57 @@ class DottyBytecodeTests extends DottyBytecodeTest {
         LineNumber(14, Label(79)),
         LineNumber(15, Label(84)),
         LineNumber(16, Label(89)),
+      )
+
+      assertSameCode(instructions, expected)
+    }
+  }
+
+  @Test def i18320(): Unit = {
+    val c1 =
+      """class C {
+        |  def m: Unit = {
+        |    val x = 1
+        |  }
+        |}
+        |""".stripMargin
+    checkBCode(c1) {dir =>
+      val clsIn = dir.lookupName("C.class", directory = false).input
+      val clsNode = loadClassNode(clsIn, skipDebugInfo = false)
+      val method = getMethod(clsNode, "m")
+      val instructions = instructionsFromMethod(method).filter(_.isInstanceOf[LineNumber])
+      val expected = List(LineNumber(3, Label(0)))
+      assertSameCode(instructions, expected)
+
+    }
+  }
+
+  @Test def i18816 = {
+    // The primary goal of this test is to check that `LineNumber` have correct numbers
+    val source =
+      """trait Context
+        |
+        |class A(x: Context) extends AnyVal:
+        |  given [T]: Context = x
+        |
+        |  def m1 =
+        |    println(m3)
+        |    def m2 =
+        |      m3 // line 9
+        |    println(m2)
+        |
+        |  def m3(using Context): String = ""
+        """.stripMargin
+
+    checkBCode(source) { dir =>
+      val clsIn   = dir.lookupName("A$.class", directory = false).input
+      val clsNode = loadClassNode(clsIn, skipDebugInfo = false)
+      val method  = getMethod(clsNode, "m2$1")
+      val instructions = instructionsFromMethod(method).filter(_.isInstanceOf[LineNumber])
+
+      // There used to be references to line 7 here
+      val expected = List(
+        LineNumber(9, Label(0)),
       )
 
       assertSameCode(instructions, expected)

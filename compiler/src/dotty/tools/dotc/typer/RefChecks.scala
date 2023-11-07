@@ -2,27 +2,27 @@ package dotty.tools
 package dotc
 package typer
 
-import transform._
-import core._
-import Symbols._, Types._, Contexts._, Flags._, Names._, NameOps._, NameKinds._
-import StdNames._, Denotations._, SymUtils._, Phases._, SymDenotations._
+import transform.*
+import core.*
+import Symbols.*, Types.*, Contexts.*, Flags.*, Names.*, NameOps.*, NameKinds.*
+import StdNames.*, Denotations.*, SymUtils.*, Phases.*, SymDenotations.*
 import NameKinds.DefaultGetterName
-import util.Spans._
+import util.Spans.*
 import scala.collection.mutable
-import ast._
-import MegaPhase._
-import config.Printers.{checks, noPrinter}
-import Decorators._
+import ast.*
+import MegaPhase.*
+import config.Printers.{checks, noPrinter, capt}
+import Decorators.*
 import OverridingPairs.isOverridingPair
-import typer.ErrorReporting._
+import typer.ErrorReporting.*
 import config.Feature.{warnOnMigration, migrateTo3, sourceVersion}
 import config.SourceVersion.{`3.0`, `future`}
 import config.Printers.refcheck
-import reporting._
+import reporting.*
 import Constants.Constant
 
 object RefChecks {
-  import tpd._
+  import tpd.*
 
   val name: String = "refchecks"
   val description: String = "checks related to abstract members and overriding"
@@ -103,7 +103,7 @@ object RefChecks {
       val cinfo = cls.classInfo
 
       def checkSelfConforms(other: ClassSymbol) =
-        val otherSelf = other.declaredSelfTypeAsSeenFrom(cls.thisType)
+        var otherSelf = other.declaredSelfTypeAsSeenFrom(cls.thisType)
         if otherSelf.exists then
           if !(cinfo.selfType <:< otherSelf) then
             report.error(DoesNotConformToSelfType("illegal inheritance", cinfo.selfType, cls, otherSelf, "parent", other),
@@ -219,36 +219,39 @@ object RefChecks {
           false
       precedesIn(parent.asClass.baseClasses)
 
-    // We can exclude pairs safely from checking only under three additional conditions
-    //   - their signatures also match in the parent class.
-    //     See neg/i12828.scala for an example where this matters.
-    //   - They overriding/overridden appear in linearization order.
-    //     See neg/i5094.scala for an example where this matters.
-    //   - The overridden symbol is not `abstract override`. For such symbols
-    //     we need a more extensive test since the virtual super chain depends
-    //     on the precise linearization order, which might be different for the
-    //     subclass. See neg/i14415.scala.
+    /** We can exclude pairs safely from checking only under three additional conditions
+     *   - their signatures also match in the parent class.
+     *     See neg/i12828.scala for an example where this matters.
+     *   - They overriding/overridden appear in linearization order.
+     *     See neg/i5094.scala for an example where this matters.
+     *   - The overridden symbol is not `abstract override`. For such symbols
+     *     we need a more extensive test since the virtual super chain depends
+     *     on the precise linearization order, which might be different for the
+     *     subclass. See neg/i14415.scala.
+     */
     override def canBeHandledByParent(sym1: Symbol, sym2: Symbol, parent: Symbol): Boolean =
       isOverridingPair(sym1, sym2, parent.thisType)
         .showing(i"already handled ${sym1.showLocated}: ${sym1.asSeenFrom(parent.thisType).signature}, ${sym2.showLocated}: ${sym2.asSeenFrom(parent.thisType).signature} = $result", refcheck)
       && inLinearizationOrder(sym1, sym2, parent)
       && !sym2.is(AbsOverride)
 
-    // Checks the subtype relationship tp1 <:< tp2.
-    // It is passed to the `checkOverride` operation in `checkAll`, to be used for
-    // compatibility checking.
+    /** Checks the subtype relationship tp1 <:< tp2.
+     *  It is passed to the `checkOverride` operation in `checkAll`, to be used for
+     *  compatibility checking.
+     */
     def checkSubType(tp1: Type, tp2: Type)(using Context): Boolean = tp1 frozen_<:< tp2
 
-    /** A hook that allows to adjust the type of `member` and `other` before checking conformance.
+    /** A hook that allows to omit override checks between `overriding` and `overridden`.
      *  Overridden in capture checking to handle non-capture checked classes leniently.
      */
-    def adjustInfo(tp: Type, member: Symbol)(using Context): Type = tp
+    def needsCheck(overriding: Symbol, overridden: Symbol)(using Context): Boolean = true
 
     private val subtypeChecker: (Type, Type) => Context ?=> Boolean = this.checkSubType
 
     def checkAll(checkOverride: ((Type, Type) => Context ?=> Boolean, Symbol, Symbol) => Unit) =
       while hasNext do
-        checkOverride(subtypeChecker, overriding, overridden)
+        if needsCheck(overriding, overridden) then
+          checkOverride(subtypeChecker, overriding, overridden)
         next()
 
       // The OverridingPairs cursor does assume that concrete overrides abstract
@@ -262,8 +265,11 @@ object RefChecks {
         if dcl.is(Deferred) then
           for other <- dcl.allOverriddenSymbols do
             if !other.is(Deferred) then
-              checkOverride(checkSubType, dcl, other)
+              checkOverride(subtypeChecker, dcl, other)
     end checkAll
+
+    // Disabled for capture checking since traits can get different parameter refinements
+    def checkInheritedTraitParameters: Boolean = true
   end OverridingPairsChecker
 
   /** 1. Check all members of class `clazz` for overriding conditions.
@@ -366,9 +372,10 @@ object RefChecks {
      */
     def checkOverride(checkSubType: (Type, Type) => Context ?=> Boolean, member: Symbol, other: Symbol): Unit =
       def memberTp(self: Type) =
-        if (member.isClass) TypeAlias(member.typeRef.EtaExpand(member.typeParams))
-        else checker.adjustInfo(self.memberInfo(member), member)
-      def otherTp(self: Type) = checker.adjustInfo(self.memberInfo(other), other)
+        if (member.isClass) TypeAlias(member.typeRef.etaExpand(member.typeParams))
+        else self.memberInfo(member)
+      def otherTp(self: Type) =
+        self.memberInfo(other)
 
       refcheck.println(i"check override ${infoString(member)} overriding ${infoString(other)}")
 
@@ -847,7 +854,7 @@ object RefChecks {
       checkCaseClassInheritanceInvariant()
     }
 
-    if (!clazz.is(Trait)) {
+    if (!clazz.is(Trait) && checker.checkInheritedTraitParameters) {
       // check that parameterized base classes and traits are typed in the same way as from the superclass
       // I.e. say we have
       //
@@ -1124,7 +1131,7 @@ object RefChecks {
       report.warning(UnqualifiedCallToAnyRefMethod(tree, tree.symbol), tree)
 
 }
-import RefChecks._
+import RefChecks.*
 
 /** Post-attribution checking and transformation, which fulfills the following roles
  *
@@ -1158,7 +1165,7 @@ import RefChecks._
  */
 class RefChecks extends MiniPhase { thisPhase =>
 
-  import tpd._
+  import tpd.*
 
   override def phaseName: String = RefChecks.name
 
@@ -1574,7 +1581,7 @@ class RefChecks extends MiniPhase { thisPhase =>
     private def transformIf(tree: If): Tree = {
       val If(cond, thenpart, elsepart) = tree
       def unitIfEmpty(t: Tree): Tree =
-        if (t == EmptyTree) Literal(Constant(())).setPos(tree.pos).setType(UnitTpe) else t
+        if (t == EmptyTree) unitLiteral.setPos(tree.pos).setType(UnitTpe) else t
 
       cond.tpe match {
         case ConstantType(value) =>
