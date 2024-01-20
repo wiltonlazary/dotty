@@ -9,7 +9,7 @@ import Symbols.*
 import dotty.tools.dotc.ast.tpd
 import reporting.*
 
-import dotty.tools.dotc.transform.SymUtils.*
+
 
 /** A transformer that check that requirements of Static fields\methods are implemented:
   *  1. Only objects can have members annotated with `@static`
@@ -29,6 +29,9 @@ class CheckStatic extends MiniPhase {
   override def phaseName: String = CheckStatic.name
 
   override def description: String = CheckStatic.description
+
+  override def runsAfter: Set[String] = Set(UncacheGivenAliases.name)
+    // UncachedGivenAliases eliminates static lazy vals, which are flagged as errors here
 
   override def transformTemplate(tree: tpd.Template)(using Context): tpd.Tree = {
     val defns = tree.body.collect{case t: ValOrDefDef => t}

@@ -33,15 +33,16 @@ abstract class PcCollector[T](
     params: VirtualFileParams
 ):
   private val caseClassSynthetics: Set[Name] = Set(nme.apply, nme.copy)
-  val uri = params.uri()
-  val filePath = Paths.get(uri)
-  val sourceText = params.text
+  val uri = params.uri().nn
+  val filePath = Paths.get(uri).nn
+  val sourceText = params.text().nn
+  val text = sourceText.toCharArray().nn
   val source =
-    SourceFile.virtual(filePath.toString, sourceText)
+    SourceFile.virtual(filePath.toString(), sourceText)
   driver.run(uri, source)
   given ctx: Context = driver.currentCtx
 
-  val unit = driver.currentCtx.run.units.head
+  val unit = driver.currentCtx.run.nn.units.head
   val compilatonUnitContext = ctx.fresh.setCompilationUnit(unit)
   val offset = params match
     case op: OffsetParams => op.offset()
@@ -49,8 +50,7 @@ abstract class PcCollector[T](
   val offsetParams =
     params match
       case op: OffsetParams => op
-      case _ =>
-        CompilerOffsetParams(params.uri(), params.text(), 0, params.token())
+      case _ => CompilerOffsetParams(uri, sourceText, 0, params.token().nn)
   val pos = driver.sourcePosition(offsetParams)
   val rawPath =
     Interactive
@@ -70,45 +70,6 @@ abstract class PcCollector[T](
   def collect(
       parent: Option[Tree]
   )(tree: Tree| EndMarker, pos: SourcePosition, symbol: Option[Symbol]): T
-
-  /**
-   * @return (adjusted position, should strip backticks)
-   */
-  def adjust(
-      pos1: SourcePosition,
-      forRename: Boolean = false
-  ): (SourcePosition, Boolean) =
-    if !pos1.span.isCorrect then (pos1, false)
-    else
-      val pos0 =
-        val span = pos1.span
-        if span.exists && span.point > span.end then
-          pos1.withSpan(
-            span
-              .withStart(span.point)
-              .withEnd(span.point + (span.end - span.start))
-          )
-        else pos1
-
-      val pos =
-        if pos0.end > 0 && sourceText(pos0.end - 1) == ',' then
-          pos0.withEnd(pos0.end - 1)
-        else pos0
-      val isBackticked =
-        sourceText(pos.start) == '`' &&
-          pos.end > 0 &&
-          sourceText(pos.end - 1) == '`'
-      // when the old name contains backticks, the position is incorrect
-      val isOldNameBackticked = sourceText(pos.start) != '`' &&
-        pos.start > 0 &&
-        sourceText(pos.start - 1) == '`' &&
-        sourceText(pos.end) == '`'
-      if isBackticked && forRename then
-        (pos.withStart(pos.start + 1).withEnd(pos.end - 1), true)
-      else if isOldNameBackticked then
-        (pos.withStart(pos.start - 1).withEnd(pos.end + 1), false)
-      else (pos, false)
-  end adjust
 
   def symbolAlternatives(sym: Symbol) =
     def member(parent: Symbol) = parent.info.member(sym.name).symbol
@@ -183,6 +144,22 @@ abstract class PcCollector[T](
           if id.symbol
             .is(Flags.Param) && id.symbol.owner.is(Flags.ExtensionMethod) =>
         Some(findAllExtensionParamSymbols(id.sourcePos, id.name, id.symbol))
+      /**
+       * Workaround for missing symbol in:
+       * class A[T](a: T)
+       * val x = new <<A>>(1)
+       */
+      case t :: (n: New) :: (sel: Select) :: _
+          if t.symbol == NoSymbol && sel.symbol.isConstructor =>
+        Some(symbolAlternatives(sel.symbol.owner), namePos(t))
+      /**
+       * Workaround for missing symbol in:
+       * class A[T](a: T)
+       * val x = <<A>>[Int](1)
+       */
+      case (sel @ Select(New(t), _)) :: (_: TypeApply) :: _
+          if sel.symbol.isConstructor =>
+        Some(symbolAlternatives(sel.symbol.owner), namePos(t))
       /* simple identifier:
        * val a = val@@ue + value
        */
@@ -443,12 +420,28 @@ abstract class PcCollector[T](
             )
           else occurrences
         /**
+         * Workaround for missing symbol in:
+         * class A[T](a: T)
+         * val x = new <<A>>(1)
+         */
+        case sel @ Select(New(t), _)
+            if sel.span.isCorrect &&
+              sel.symbol.isConstructor &&
+              t.symbol == NoSymbol =>
+          if soughtFilter(_ == sel.symbol.owner) then
+            occurrences + collect(
+              sel,
+              namePos(t),
+              Some(sel.symbol.owner),
+            )
+          else occurrences
+        /**
          * All select statements such as:
          * val a = hello.<<b>>
          */
         case sel: Select
           if sel.span.isCorrect && filter(sel) &&
-            !isForComprehensionMethod(sel) =>
+            !sel.isForComprehensionMethod =>
           occurrences + collect(
             sel,
             pos.withSpan(selectNameSpan(sel))
@@ -604,16 +597,10 @@ abstract class PcCollector[T](
       else Span(point, span.end, point)
     else span
 
-  private val forCompMethods =
-    Set(nme.map, nme.flatMap, nme.withFilter, nme.foreach)
-
-  // We don't want to collect synthethic `map`, `withFilter`, `foreach` and `flatMap` in for-comprenhensions
-  private def isForComprehensionMethod(sel: Select): Boolean =
-    val syntheticName = sel.name match
-      case name: TermName => forCompMethods(name)
-      case _ => false
-    val wrongSpan = sel.qualifier.span.contains(sel.nameSpan)
-    syntheticName && wrongSpan
+  private def namePos(tree: Tree): SourcePosition =
+    tree match
+      case sel: Select => sel.sourcePos.withSpan(selectNameSpan(sel))
+      case _ => tree.sourcePos
 end PcCollector
 
 object PcCollector:

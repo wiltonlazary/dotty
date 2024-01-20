@@ -69,12 +69,12 @@ final class PcSemanticTokensProvider(
            case tree: Tree =>
              symbol.fold(tree.symbol)(identity)
            case EndMarker(sym) => sym
-      if !pos.exists || sym == null || sym == NoSymbol then None
+      if !pos.exists || sym == NoSymbol then None
       else
         Some(
           makeNode(
             sym = sym,
-            pos = adjust(pos)._1,
+            pos = pos.adjust(text)._1,
             isDefinition = isDefinition(tree),
             isDeclaration = isDeclaration(tree)
           )
@@ -129,7 +129,7 @@ final class PcSemanticTokensProvider(
         if sym.isGetter | sym.isSetter then
           getTypeId(SemanticTokenTypes.Variable)
         else getTypeId(SemanticTokenTypes.Method) // "def"
-      else if isPredefClass(sym) then
+      else if sym.isTerm && sym.info.typeSymbol.is(Flags.Module)  then
         getTypeId(SemanticTokenTypes.Class) // "class"
       else if sym.isTerm &&
         (!sym.is(Flags.Param) || sym.is(Flags.ParamAccessor))
@@ -150,8 +150,5 @@ final class PcSemanticTokensProvider(
 
     TokenNode(pos.start, pos.`end`, typ, mod)
   end makeNode
-
-  def isPredefClass(sym: Symbol)(using Context) =
-    sym.is(Flags.Method) && sym.info.resultType.typeSymbol.is(Flags.Module)
 
 end PcSemanticTokensProvider

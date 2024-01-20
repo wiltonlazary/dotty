@@ -23,7 +23,6 @@ import scala.util.control.NonFatal
 import config.Config
 import reporting.*
 import collection.mutable
-import transform.TypeUtils.*
 import cc.{CapturingType, derivedCapturingType}
 
 import scala.annotation.internal.sharable
@@ -168,12 +167,17 @@ object SymDenotations {
             println(i"${"  " * indent}completed $name in $owner")
           }
         }
-        else {
-          if (myFlags.is(Touched))
-            throw CyclicReference(this)(using ctx.withOwner(symbol))
-          myFlags |= Touched
-          atPhase(validFor.firstPhaseId)(completer.complete(this))
-        }
+        else
+          val traceCycles = CyclicReference.isTraced
+          try
+            if traceCycles then
+              CyclicReference.pushTrace("compute the signature of ", symbol, "")
+            if myFlags.is(Touched) then
+              throw CyclicReference(this)(using ctx.withOwner(symbol))
+            myFlags |= Touched
+            atPhase(validFor.firstPhaseId)(completer.complete(this))
+          finally
+            if traceCycles then CyclicReference.popTrace()
 
     protected[dotc] def info_=(tp: Type): Unit = {
       /* // DEBUG
@@ -1032,6 +1036,10 @@ object SymDenotations {
       isOneOf(EffectivelyErased)
       || is(Inline) && !isRetainedInline && !hasAnnotation(defn.ScalaStaticAnnot)
 
+    /** Is this a member that will become public in the generated binary */
+    def hasPublicInBinary(using Context): Boolean =
+      isTerm && hasAnnotation(defn.PublicInBinaryAnnot)
+
     /** ()T and => T types should be treated as equivalent for this symbol.
      *  Note: For the moment, we treat Scala-2 compiled symbols as loose matching,
      *  because the Scala library does not always follow the right conventions.
@@ -1194,7 +1202,14 @@ object SymDenotations {
      *  is defined in Scala 3 and is neither abstract nor open.
      */
     final def isEffectivelySealed(using Context): Boolean =
-      isOneOf(FinalOrSealed) || isClass && !isOneOf(EffectivelyOpenFlags)
+      isOneOf(FinalOrSealed)
+      || isClass && (!isOneOf(EffectivelyOpenFlags)
+      || isLocalToCompilationUnit)
+
+    final def isLocalToCompilationUnit(using Context): Boolean =
+      is(Private)
+      || owner.ownersIterator.exists(_.isTerm)
+      || accessBoundary(defn.RootClass).isContainedIn(symbol.topLevelClass)
 
     final def isTransparentClass(using Context): Boolean =
       is(TransparentType)
@@ -1696,7 +1711,7 @@ object SymDenotations {
             c.ensureCompleted()
       end completeChildrenIn
 
-      if is(Sealed) || isAllOf(JavaEnumTrait) then
+      if is(Sealed) || isAllOf(JavaEnum) && isClass then
         if !is(ChildrenQueried) then
           // Make sure all visible children are completed, so that
           // they show up in Child annotations. A possible child is visible if it
@@ -2588,7 +2603,7 @@ object SymDenotations {
       for (sym <- scope.toList.iterator)
         // We need to be careful to not force the denotation of `sym` here,
         // otherwise it will be brought forward to the current run.
-        if (sym.defRunId != ctx.runId && sym.isClass && sym.asClass.assocFile == file)
+        if (sym.defRunId != ctx.runId && sym.isClass && sym.asClass.compUnitInfo != null && sym.asClass.compUnitInfo.nn.associatedFile == file)
           scope.unlink(sym, sym.lastKnownDenotation.name)
     }
   }
@@ -2968,7 +2983,10 @@ object SymDenotations {
     def apply(clsd: ClassDenotation)(implicit onBehalf: BaseData, ctx: Context)
         : (List[ClassSymbol], BaseClassSet) = {
       assert(isValid)
+      val traceCycles = CyclicReference.isTraced
       try
+        if traceCycles then
+          CyclicReference.pushTrace("compute the base classes of ", clsd.symbol, "")
         if (cache != null) cache.uncheckedNN
         else {
           if (locked) throw CyclicReference(clsd)
@@ -2981,7 +2999,9 @@ object SymDenotations {
           else onBehalf.signalProvisional()
           computed
         }
-      finally addDependent(onBehalf)
+      finally
+        if traceCycles then CyclicReference.popTrace()
+        addDependent(onBehalf)
     }
 
     def sameGroup(p1: Phase, p2: Phase) = p1.sameParentsStartId == p2.sameParentsStartId

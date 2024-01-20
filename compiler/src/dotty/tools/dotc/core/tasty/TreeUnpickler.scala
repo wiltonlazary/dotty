@@ -5,7 +5,7 @@ package tasty
 
 import scala.language.unsafeNulls
 
-import Comments.CommentsContext
+import Comments.docCtx
 import Contexts.*
 import Symbols.*
 import Types.*
@@ -31,7 +31,6 @@ import util.{SourceFile, Property}
 import ast.{Trees, tpd, untpd}
 import Trees.*
 import Decorators.*
-import transform.SymUtils.*
 import dotty.tools.dotc.quoted.QuotePatterns
 
 import dotty.tools.tasty.{TastyBuffer, TastyReader}
@@ -50,15 +49,16 @@ import scala.compiletime.uninitialized
 
 /** Unpickler for typed trees
  *  @param reader              the reader from which to unpickle
+ *  @param compilationUnitInfo  the compilation unit info of the TASTy
  *  @param posUnpicklerOpt     the unpickler for positions, if it exists
  *  @param commentUnpicklerOpt the unpickler for comments, if it exists
  *  @param attributeUnpicklerOpt the unpickler for attributes, if it exists
  */
 class TreeUnpickler(reader: TastyReader,
                     nameAtRef: NameTable,
+                    compilationUnitInfo: CompilationUnitInfo,
                     posUnpicklerOpt: Option[PositionUnpickler],
-                    commentUnpicklerOpt: Option[CommentUnpickler],
-                    attributeUnpicklerOpt: Option[AttributeUnpickler]) {
+                    commentUnpicklerOpt: Option[CommentUnpickler]) {
   import TreeUnpickler.*
   import tpd.*
 
@@ -93,19 +93,21 @@ class TreeUnpickler(reader: TastyReader,
   /** The root owner tree. See `OwnerTree` class definition. Set by `enterTopLevel`. */
   private var ownerTree: OwnerTree = uninitialized
 
-  /** Was unpickled class compiled with pureFunctions? */
-  private var withPureFuns: Boolean = false
+  /** TASTy attributes */
+  private val attributes: Attributes = compilationUnitInfo.tastyInfo.get.attributes
 
   /** Was unpickled class compiled with capture checks? */
-  private var withCaptureChecks: Boolean = false
+  private val withCaptureChecks: Boolean = attributes.captureChecked
 
-  private val unpicklingScala2Library =
-    attributeUnpicklerOpt.exists(_.attributes.scala2StandardLibrary)
+  private val unpicklingScala2Library = attributes.scala2StandardLibrary
 
   /** This dependency was compiled with explicit nulls enabled */
   // TODO Use this to tag the symbols of this dependency as compiled with explicit nulls (see use of unpicklingScala2Library).
-  private val explicitNulls =
-    attributeUnpicklerOpt.exists(_.attributes.explicitNulls)
+  private val explicitNulls = attributes.explicitNulls
+
+  private val unpicklingJava = attributes.isJava
+
+  private val isOutline = attributes.isOutline
 
   private def registerSym(addr: Addr, sym: Symbol) =
     symAtAddr(addr) = sym
@@ -139,25 +141,25 @@ class TreeUnpickler(reader: TastyReader,
     val mode = ctx.mode
     val source = ctx.source
     def complete(denot: SymDenotation)(using Context): Unit =
-      def fail(ex: Throwable) =
-        def where =
-          val f = denot.symbol.associatedFile
-          if f == null then "" else s" in $f"
-        if ctx.settings.YdebugUnpickling.value then throw ex
-        else throw TypeError(
-          em"""Could not read definition of $denot$where
-              |An exception was encountered:
-              |  $ex
-              |Run with -Ydebug-unpickling to see full stack trace.""")
+      def where =
+        val f = denot.symbol.associatedFile
+        if f == null then "" else s" in $f"
+      def fail(ex: Throwable) = throw UnpicklingError(denot, where, ex)
       treeAtAddr(currentAddr) =
+        val traceCycles = CyclicReference.isTraced
         try
+          if traceCycles then
+            CyclicReference.pushTrace("read the definition of ", denot.symbol, where)
           atPhaseBeforeTransforms {
             new TreeReader(reader).readIndexedDef()(
               using ctx.withOwner(owner).withModeBits(mode).withSource(source))
           }
         catch
+          case ex: CyclicReference => throw ex
           case ex: AssertionError => fail(ex)
           case ex: Exception => fail(ex)
+        finally
+          if traceCycles then CyclicReference.popTrace()
   }
 
   class TreeReader(val reader: TastyReader) {
@@ -166,6 +168,11 @@ class TreeUnpickler(reader: TastyReader,
     def forkAt(start: Addr): TreeReader = new TreeReader(subReader(start, endAddr))
     def fork: TreeReader = forkAt(currentAddr)
 
+    def skipParentTree(tag: Int): Unit = {
+      if tag == SPLITCLAUSE then ()
+      else skipTree(tag)
+    }
+    def skipParentTree(): Unit = skipParentTree(readByte())
     def skipTree(tag: Int): Unit = {
       if (tag >= firstLengthTreeTag) goto(readEnd())
       else if (tag >= firstNatASTTreeTag) { readNat(); skipTree() }
@@ -444,7 +451,11 @@ class TreeUnpickler(reader: TastyReader,
           readPackageRef().termRef
         case TYPEREF =>
           val name = readName().toTypeName
-          TypeRef(readType(), name)
+          val pre = readType()
+          if unpicklingJava && name == tpnme.Object && (pre.termSymbol eq defn.JavaLangPackageVal) then
+            defn.FromJavaObjectType
+          else
+            TypeRef(pre, name)
         case TERMREF =>
           val sname = readName()
           val prefix = readType()
@@ -612,7 +623,10 @@ class TreeUnpickler(reader: TastyReader,
       val rhsIsEmpty = nothingButMods(end)
       if (!rhsIsEmpty) skipTree()
       val (givenFlags0, annotFns, privateWithin) = readModifiers(end)
-      val givenFlags = if isClass && unpicklingScala2Library then givenFlags0 | Scala2x | Scala2Tasty else givenFlags0
+      val givenFlags =
+        if isClass && unpicklingScala2Library then givenFlags0 | Scala2x | Scala2Tasty
+        else if unpicklingJava then givenFlags0 | JavaDefined
+        else givenFlags0
       pickling.println(i"creating symbol $name at $start with flags ${givenFlags.flagsString}, isAbsType = $isAbsType, $ttag")
       val flags = normalizeFlags(tag, givenFlags, name, isAbsType, rhsIsEmpty)
       def adjustIfModule(completer: LazyType) =
@@ -631,8 +645,8 @@ class TreeUnpickler(reader: TastyReader,
             rootd.symbol
           case _ =>
             val completer = adjustIfModule(new Completer(subReader(start, end)))
-            if (isClass)
-              newClassSymbol(ctx.owner, name.asTypeName, flags, completer, privateWithin, coord)
+            if isClass then
+              newClassSymbol(ctx.owner, name.asTypeName, flags, completer, privateWithin, coord, compilationUnitInfo)
             else
               newSymbol(ctx.owner, name, flags, completer, privateWithin, coord)
         }
@@ -656,13 +670,8 @@ class TreeUnpickler(reader: TastyReader,
       }
       registerSym(start, sym)
       if (isClass) {
-        if sym.owner.is(Package) then
-          if annots.exists(_.hasSymbol(defn.CaptureCheckedAnnot)) then
-            sym.setFlag(CaptureChecked)
-            withCaptureChecks = true
-            withPureFuns = true
-          else if annots.exists(_.hasSymbol(defn.WithPureFunsAnnot)) then
-            withPureFuns = true
+        if sym.owner.is(Package) && withCaptureChecks then
+          sym.setFlag(CaptureChecked)
         sym.completer.withDecls(newScope)
         forkAt(templateStart).indexTemplateParams()(using localContext(sym))
       }
@@ -1012,7 +1021,7 @@ class TreeUnpickler(reader: TastyReader,
      *                   parsed in this way as InferredTypeTrees.
      */
     def readParents(withArgs: Boolean)(using Context): List[Tree] =
-      collectWhile(nextByte != SELFDEF && nextByte != DEFDEF) {
+      collectWhile({val tag = nextByte; tag != SELFDEF && tag != DEFDEF && tag != SPLITCLAUSE}) {
         nextUnsharedTag match
           case APPLY | TYPEAPPLY | BLOCK =>
             if withArgs then readTree()
@@ -1039,12 +1048,15 @@ class TreeUnpickler(reader: TastyReader,
       val bodyFlags = {
         val bodyIndexer = fork
         // The first DEFDEF corresponds to the primary constructor
-        while (bodyIndexer.reader.nextByte != DEFDEF) bodyIndexer.skipTree()
+        while ({val tag = bodyIndexer.reader.nextByte; tag != DEFDEF && tag != SPLITCLAUSE}) do
+          bodyIndexer.skipParentTree()
         bodyIndexer.indexStats(end)
       }
       val parentReader = fork
       val parents = readParents(withArgs = false)(using parentCtx)
       val parentTypes = parents.map(_.tpe.dealias)
+      if cls.is(JavaDefined) && parentTypes.exists(_.derivesFrom(defn.JavaAnnotationClass)) then
+        cls.setFlag(JavaAnnotation)
       val self =
         if (nextByte == SELFDEF) {
           readByte()
@@ -1053,10 +1065,41 @@ class TreeUnpickler(reader: TastyReader,
         else EmptyValDef
       cls.setNoInitsFlags(parentsKind(parents), bodyFlags)
       cls.info = ClassInfo(
-        cls.owner.thisType, cls, parentTypes, cls.unforcedDecls,
-        selfInfo = if (self.isEmpty) NoType else self.tpt.tpe)
-        .integrateOpaqueMembers
-      val constr = readIndexedDef().asInstanceOf[DefDef]
+          cls.owner.thisType, cls, parentTypes, cls.unforcedDecls,
+          selfInfo = if (self.isEmpty) NoType else self.tpt.tpe
+        ).integrateOpaqueMembers
+
+      val constr =
+        if nextByte == SPLITCLAUSE then
+          assert(unpicklingJava, s"unexpected SPLITCLAUSE at $start")
+          val tag = readByte()
+          def ta = ctx.typeAssigner
+          val flags = Flags.JavaDefined | Flags.PrivateLocal | Flags.Invisible
+          val ctorCompleter = new LazyType {
+            def complete(denot: SymDenotation)(using Context) =
+              val sym = denot.symbol
+              val pflags = flags | Flags.Param
+              val tparamRefs = tparams.map(_.symbol.asType)
+              lazy val derivedTparamSyms: List[TypeSymbol] = tparams.map: tdef =>
+                val completer = new LazyType {
+                  def complete(denot: SymDenotation)(using Context) =
+                    denot.info = tdef.symbol.asType.info.subst(tparamRefs, derivedTparamRefs)
+                }
+                newSymbol(sym, tdef.name, Flags.JavaDefined | Flags.Param, completer, coord = cls.coord)
+              lazy val derivedTparamRefs: List[Type] = derivedTparamSyms.map(_.typeRef)
+              val vparamSym =
+                newSymbol(sym, nme.syntheticParamName(1), pflags, defn.UnitType, coord = cls.coord)
+              val vparamSymss: List[List[Symbol]] = List(vparamSym) :: Nil
+              val paramSymss =
+                if derivedTparamSyms.nonEmpty then derivedTparamSyms :: vparamSymss else vparamSymss
+              val res = effectiveResultType(sym, paramSymss)
+              denot.info = methodType(paramSymss, res)
+              denot.setParamss(paramSymss)
+          }
+          val ctorSym = newSymbol(ctx.owner, nme.CONSTRUCTOR, flags, ctorCompleter, coord = coordAt(start))
+          tpd.DefDef(ctorSym, EmptyTree).setDefTree // fake primary constructor
+        else
+          readIndexedDef().asInstanceOf[DefDef]
       val mappedParents: LazyTreeList =
         if parents.exists(_.isInstanceOf[InferredTypeTree]) then
           // parents were not read fully, will need to be read again later on demand
@@ -1177,6 +1220,9 @@ class TreeUnpickler(reader: TastyReader,
 
 // ------ Reading trees -----------------------------------------------------
 
+    private def ElidedTree(tpe: Type)(using Context): Tree =
+      untpd.Ident(nme.WILDCARD).withType(tpe)
+
     def readTree()(using Context): Tree = {
       val sctx = sourceChangeContext()
       if (sctx `ne` ctx) return readTree()(using sctx)
@@ -1205,7 +1251,11 @@ class TreeUnpickler(reader: TastyReader,
 
       def completeSelect(name: Name, sig: Signature, target: Name): Select =
         val qual = readTree()
-        val denot = accessibleDenot(qual.tpe.widenIfUnstable, name, sig, target)
+        val denot =
+          if unpicklingJava && name == tpnme.Object && qual.symbol == defn.JavaLangPackageVal then
+            defn.FromJavaObjectSymbol.denot
+          else
+            accessibleDenot(qual.tpe.widenIfUnstable, name, sig, target)
         makeSelect(qual, name, denot)
 
       def readQualId(): (untpd.Ident, TypeRef) =
@@ -1224,6 +1274,12 @@ class TreeUnpickler(reader: TastyReader,
           forkAt(readAddr()).readTree()
         case IDENT =>
           untpd.Ident(readName()).withType(readType())
+        case ELIDED =>
+          if !isOutline then
+            val msg =
+              s"Illegal elided tree in unpickler at $start without ${attributeTagToString(OUTLINEattr)}, ${ctx.source}"
+            report.error(msg)
+          ElidedTree(readType())
         case IDENTtpt =>
           untpd.Ident(readName().toTypeName).withType(readType())
         case SELECT =>

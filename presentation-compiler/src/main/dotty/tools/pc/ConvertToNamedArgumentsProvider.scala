@@ -23,20 +23,19 @@ final class ConvertToNamedArgumentsProvider(
 ):
 
   def convertToNamedArguments: Either[String, List[l.TextEdit]] =
-    val uri = params.uri
+    val uri = params.uri().nn
+    val text = params.text().nn
     val filePath = Paths.get(uri)
-    driver.run(
-      uri,
-      SourceFile.virtual(filePath.toString, params.text)
-    )
-    val unit = driver.currentCtx.run.units.head
+    driver.run(uri, SourceFile.virtual(filePath.toString, text))
+
+    val unit = driver.currentCtx.run.nn.units.head
     val newctx = driver.currentCtx.fresh.setCompilationUnit(unit)
     val pos = driver.sourcePosition(params)
     val trees = driver.openedTrees(uri)
     val tree = Interactive.pathTo(trees, pos)(using newctx).headOption
 
     def paramss(fun: tpd.Tree)(using Context): List[String] =
-      fun.tpe match
+      fun.typeOpt match
         case m: MethodType => m.paramNamess.flatten.map(_.toString)
         case _ =>
           fun.symbol.rawParamss.flatten

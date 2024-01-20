@@ -11,8 +11,6 @@ import Decorators.*
 import ProtoTypes.*
 import Inferencing.{fullyDefinedType, isFullyDefined}
 import ast.untpd
-import transform.SymUtils.*
-import transform.TypeUtils.*
 import transform.SyntheticMembers.*
 import util.Property
 import ast.Trees.genericEmptyTree
@@ -104,7 +102,7 @@ class Synthesizer(typer: Typer)(using @constructorOnly c: Context):
       case AppliedType(_, funArgs @ fun :: tupled :: Nil) =>
         def functionTypeEqual(baseFun: Type, actualArgs: List[Type],
             actualRet: Type, expected: Type) =
-          expected =:= defn.FunctionOf(actualArgs, actualRet,
+          expected =:= defn.FunctionNOf(actualArgs, actualRet,
             defn.isContextFunctionType(baseFun))
         val arity: Int =
           if defn.isFunctionNType(fun) then
@@ -119,7 +117,7 @@ class Synthesizer(typer: Typer)(using @constructorOnly c: Context):
             // TupledFunction[?, (...) => R]
             tupled.functionArgInfos match
               case tupledArgs :: funRet :: Nil =>
-                defn.tupleTypes(tupledArgs.dealias) match
+                tupledArgs.tupleElementTypes match
                   case Some(funArgs) if functionTypeEqual(tupled, funArgs, funRet, fun) =>
                     // TupledFunction[?, ((...funArgs...)) => funRet]
                     funArgs.size
@@ -381,6 +379,7 @@ class Synthesizer(typer: Typer)(using @constructorOnly c: Context):
                 // avoid type aliases for tuples
                 Right(MirrorSource.GenericTuple(types))
               case _ => reduce(tp.underlying)
+          case tp: MatchType => reduce(tp.normalized)
           case _ => reduce(tp.superType)
       case tp @ AndType(l, r) =>
         for
@@ -409,7 +408,7 @@ class Synthesizer(typer: Typer)(using @constructorOnly c: Context):
       New(defn.RuntimeTupleMirrorTypeRef, Literal(Constant(arity)) :: Nil)
 
     def makeProductMirror(pre: Type, cls: Symbol, tps: Option[List[Type]]): TreeWithErrors =
-      val accessors = cls.caseAccessors.filterNot(_.isAllOf(PrivateLocal))
+      val accessors = cls.caseAccessors
       val elemLabels = accessors.map(acc => ConstantType(Constant(acc.name.toString)))
       val typeElems = tps.getOrElse(accessors.map(mirroredType.resultType.memberInfo(_).widenExpr))
       val nestedPairs = TypeOps.nestedPairs(typeElems)

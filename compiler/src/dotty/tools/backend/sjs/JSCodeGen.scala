@@ -21,7 +21,7 @@ import StdNames.*
 import TypeErasure.ErasedValueType
 
 import dotty.tools.dotc.transform.{Erasure, ValueClasses}
-import dotty.tools.dotc.transform.SymUtils.*
+
 import dotty.tools.dotc.util.SourcePosition
 import dotty.tools.dotc.report
 
@@ -36,6 +36,7 @@ import dotty.tools.dotc.transform.sjs.JSSymUtils.*
 
 import JSEncoding.*
 import ScopedVar.withScopedVars
+import scala.reflect.NameTransformer
 
 /** Main codegen for Scala.js IR.
  *
@@ -792,6 +793,9 @@ class JSCodeGen()(using genCtx: Context) {
         name.name
     }.toSet
 
+    val staticNames = moduleClass.companionClass.info.allMembers
+      .collect { case d if d.name.isTermName && d.symbol.isScalaStatic => d.name }.toSet
+
     val members = {
       moduleClass.info.membersBasedOnFlags(required = Flags.Method,
           excluded = Flags.ExcludedForwarder).map(_.symbol)
@@ -814,6 +818,7 @@ class JSCodeGen()(using genCtx: Context) {
         || hasAccessBoundary
         || isOfJLObject
         || m.hasAnnotation(jsdefn.JSNativeAnnot) || isDefaultParamOfJSNativeDef // #4557
+        || staticNames(m.name)
     }
 
     val forwarders = for {
@@ -4218,7 +4223,7 @@ class JSCodeGen()(using genCtx: Context) {
       }
     }
 
-    val methodName = MethodName.reflectiveProxy(methodNameStr, formalParamTypeRefs)
+    val methodName = MethodName.reflectiveProxy(NameTransformer.encode(methodNameStr), formalParamTypeRefs)
 
     js.Apply(js.ApplyFlags.empty, selectedValueTree, js.MethodIdent(methodName), actualArgs)(jstpe.AnyType)
   }
@@ -4768,7 +4773,7 @@ class JSCodeGen()(using genCtx: Context) {
   }
 
   private def isMethodStaticInIR(sym: Symbol): Boolean =
-    sym.is(JavaStatic)
+    sym.is(JavaStatic) || sym.isScalaStatic
 
   /** Generate a Class[_] value (e.g. coming from classOf[T]) */
   private def genClassConstant(tpe: Type)(implicit pos: Position): js.Tree =

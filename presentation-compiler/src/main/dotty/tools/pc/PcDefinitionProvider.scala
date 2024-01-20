@@ -36,11 +36,12 @@ class PcDefinitionProvider(
     definitions(findTypeDef = true)
 
   private def definitions(findTypeDef: Boolean): DefinitionResult =
-    val uri = params.uri
+    val uri = params.uri().nn
+    val text = params.text().nn
     val filePath = Paths.get(uri)
     driver.run(
       uri,
-      SourceFile.virtual(filePath.toString, params.text)
+      SourceFile.virtual(filePath.toString, text)
     )
 
     val pos = driver.sourcePosition(params)
@@ -53,7 +54,7 @@ class PcDefinitionProvider(
       if findTypeDef then findTypeDefinitions(path, pos, indexedContext)
       else findDefinitions(path, pos, indexedContext)
 
-    if result.locations().isEmpty() then fallbackToUntyped(pos)(using ctx)
+    if result.locations().nn.isEmpty() then fallbackToUntyped(pos)(using ctx)
     else result
   end definitions
 
@@ -107,7 +108,7 @@ class PcDefinitionProvider(
       case Nil =>
         path.headOption match
           case Some(value: Literal) =>
-            definitionsForSymbol(List(value.tpe.widen.typeSymbol), pos)
+            definitionsForSymbol(List(value.typeOpt.widen.typeSymbol), pos)
           case _ => DefinitionResultImpl.empty
       case _ =>
         definitionsForSymbol(typeSymbols, pos)

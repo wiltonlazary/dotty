@@ -74,21 +74,17 @@ object CaseKeywordCompletion:
     val parents: Parents = selector match
       case EmptyTree =>
         val seenFromType = parent match
-          case TreeApply(fun, _) if fun.tpe != null && !fun.tpe.isErroneous =>
-            fun.tpe
-          case _ =>
-            parent.tpe
+          case TreeApply(fun, _) if !fun.typeOpt.isErroneous => fun.typeOpt
+          case _ => parent.typeOpt
         seenFromType.paramInfoss match
           case (head :: Nil) :: _
               if definitions.isFunctionType(head) || head.isRef(
                 definitions.PartialFunctionClass
               ) =>
-            val argTypes =
-              head.argTypes.init
+            val argTypes = head.argTypes.init
             new Parents(argTypes, definitions)
-          case _ =>
-            new Parents(NoType, definitions)
-      case sel => new Parents(sel.tpe, definitions)
+          case _ => new Parents(NoType, definitions)
+      case sel => new Parents(sel.typeOpt, definitions)
 
     val selectorSym = parents.selector.widen.metalsDealias.typeSymbol
 
@@ -113,7 +109,7 @@ object CaseKeywordCompletion:
             ),
             Nil,
             range = Some(completionPos.toEditRange),
-            command = config.parameterHintsCommand().asScala,
+            command = config.parameterHintsCommand().nn.asScala,
           )
         )
       else Nil
@@ -244,7 +240,7 @@ object CaseKeywordCompletion:
       completionPos,
       clientSupportsSnippets
     )
-    val tpe = selector.tpe.widen.metalsDealias.bounds.hi match
+    val tpe = selector.typeOpt.widen.metalsDealias.bounds.hi match
       case tr @ TypeRef(_, _) => tr.underlying
       case t => t
 
@@ -305,10 +301,7 @@ object CaseKeywordCompletion:
       syms.sortBy(_._1.sym.sourcePos.point)
     else
       val defnSymbols = search
-        .definitionSourceToplevels(
-          SemanticdbSymbols.symbolName(tpe.typeSymbol),
-          uri
-        )
+        .definitionSourceToplevels(SemanticdbSymbols.symbolName(tpe.typeSymbol), uri).nn
         .asScala
         .zipWithIndex
         .toMap
@@ -356,11 +349,7 @@ object CaseKeywordCompletion:
       symTpe <:< tpe
 
     val parents = getParentTypes(tpe, List.empty)
-    parents.toList.map { parent =>
-      // There is an issue in Dotty, `sealedStrictDescendants` ends in an exception for java enums. https://github.com/lampepfl/dotty/issues/15908
-      if parent.isAllOf(JavaEnumTrait) then parent.children
-      else sealedStrictDescendants(parent)
-    } match
+    parents.toList.map(sealedStrictDescendants) match
       case Nil => Nil
       case subcls :: Nil => subcls
       case subcls =>
@@ -410,19 +399,13 @@ class CompletionValueGenerator(
       case None => true
       case Some("") => true
       case Some(Cursor.value) => true
-      case Some(query) =>
-        CompletionFuzzy.matches(
-          query.replace(Cursor.value, ""),
-          name
-        )
+      case Some(query) => CompletionFuzzy.matches(query.replace(Cursor.value, "").nn, name)
 
   def labelForCaseMember(sym: Symbol, name: String)(using
       Context
   ): Option[String] =
     val isModuleLike =
-      sym.is(Flags.Module) || sym.isOneOf(JavaEnumTrait) || sym.isOneOf(
-        JavaEnumValue
-      ) || sym.isAllOf(EnumCase)
+      sym.is(Flags.Module) || sym.isOneOf(JavaEnum) || sym.isOneOf(JavaEnumValue) || sym.isAllOf(EnumCase)
     if isModuleLike && hasBind then None
     else
       val pattern =

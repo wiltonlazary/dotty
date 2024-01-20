@@ -11,7 +11,7 @@ import Constants.*
 import ast.Trees.*
 import ast.untpd
 import ast.TreeTypeMap
-import SymUtils.*
+
 import NameKinds.*
 import dotty.tools.dotc.ast.tpd
 import dotty.tools.dotc.ast.untpd
@@ -304,7 +304,7 @@ object PickleQuotes {
     def pickleAsTasty() = {
       val body1 =
         if body.isType then body
-        else Inlined(ref(ctx.owner.topLevelClass.typeRef).withSpan(quote.span), Nil, body)
+        else Inlined(Inlines.inlineCallTrace(ctx.owner, quote.sourcePos), Nil, body)
       val pickleQuote = PickledQuotes.pickleQuote(body1)
       val pickledQuoteStrings = pickleQuote match
         case x :: Nil => Literal(Constant(x))
@@ -326,7 +326,7 @@ object PickleQuotes {
               defn.QuotedExprClass.typeRef.appliedTo(defn.AnyType)),
             args =>
               val cases = holeContents.zipWithIndex.map { case (splice, idx) =>
-                val defn.FunctionOf(argTypes, defn.FunctionOf(quotesType :: _, _, _), _) = splice.tpe: @unchecked
+                val defn.FunctionNOf(argTypes, defn.FunctionNOf(quotesType :: _, _, _), _) = splice.tpe: @unchecked
                 val rhs = {
                   val spliceArgs = argTypes.zipWithIndex.map { (argType, i) =>
                     args(1).select(nme.apply).appliedTo(Literal(Constant(i))).asInstance(argType)

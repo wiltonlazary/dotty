@@ -752,20 +752,18 @@ object Contexts {
       c
   end FreshContext
 
-  given ops: AnyRef with
-    extension (c: Context)
-      def addNotNullInfo(info: NotNullInfo) =
-        c.withNotNullInfos(c.notNullInfos.extendWith(info))
+  extension (c: Context)
+    def addNotNullInfo(info: NotNullInfo) =
+      c.withNotNullInfos(c.notNullInfos.extendWith(info))
 
-      def addNotNullRefs(refs: Set[TermRef]) =
-        c.addNotNullInfo(NotNullInfo(refs, Set()))
+    def addNotNullRefs(refs: Set[TermRef]) =
+      c.addNotNullInfo(NotNullInfo(refs, Set()))
 
-      def withNotNullInfos(infos: List[NotNullInfo]): Context =
-        if c.notNullInfos eq infos then c else c.fresh.setNotNullInfos(infos)
+    def withNotNullInfos(infos: List[NotNullInfo]): Context =
+      if c.notNullInfos eq infos then c else c.fresh.setNotNullInfos(infos)
 
-      def relaxedOverrideContext: Context =
-        c.withModeBits(c.mode &~ Mode.SafeNulls | Mode.RelaxedOverriding)
-  end ops
+    def relaxedOverrideContext: Context =
+      c.withModeBits(c.mode &~ Mode.SafeNulls | Mode.RelaxedOverriding)
 
   // TODO: Fix issue when converting ModeChanges and FreshModeChanges to extension givens
   extension (c: Context) {
@@ -1063,6 +1061,7 @@ object Contexts {
       sources.clear()
       files.clear()
       comparers.clear()  // forces re-evaluation of top and bottom classes in TypeComparer
+      comparersInUse = 0
 
     // Test that access is single threaded
 

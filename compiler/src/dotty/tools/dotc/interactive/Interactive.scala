@@ -10,7 +10,6 @@ import ast.{NavigateAST, Trees, tpd, untpd}
 import core.*
 import Decorators.*, ContextOps.*
 import Contexts.*, Flags.*, Names.*, NameOps.*, Symbols.*, Trees.*, Types.*
-import transform.SymUtils.*
 import util.Spans.*, util.SourceFile, util.SourcePosition
 
 /** High-level API to get information out of typed trees, designed to be used by IDEs.
@@ -283,12 +282,10 @@ object Interactive {
     case nested :: encl :: rest =>
       val outer = contextOfPath(encl :: rest)
       try encl match {
-        case tree @ PackageDef(pkg, stats) =>
-          assert(tree.symbol.exists)
+        case tree @ PackageDef(pkg, stats) if tree.symbol.exists =>
           if (nested `eq` pkg) outer
           else contextOfStat(stats, nested, pkg.symbol.moduleClass, outer.packageContext(tree, tree.symbol))
-        case tree: DefDef =>
-          assert(tree.symbol.exists)
+        case tree: DefDef if tree.symbol.exists =>
           val localCtx = outer.localContext(tree, tree.symbol).setNewScope
           for params <- tree.paramss; param <- params do localCtx.enter(param.symbol)
             // Note: this overapproximates visibility a bit, since value parameters are only visible
