@@ -131,7 +131,7 @@ object StdNames {
     val EXCEPTION_RESULT_PREFIX: N    = "exceptionResult"
     val EXPAND_SEPARATOR: N           = str.EXPAND_SEPARATOR
     val IMPORT: N                     = "<import>"
-    val INTO: N                       = "<into>"
+    val INTO: N                       = "$into"
     val MODULE_SUFFIX: N              = str.MODULE_SUFFIX
     val OPS_PACKAGE: N                = "<special-ops>"
     val OVERLOADED: N                 = "<overloaded>"
@@ -537,6 +537,7 @@ object StdNames {
     val ManifestFactory: N      = "ManifestFactory"
     val manifestToTypeTag: N    = "manifestToTypeTag"
     val map: N                  = "map"
+    val maybeCapability: N      = "maybeCapability"
     val materializeClassTag: N  = "materializeClassTag"
     val materializeWeakTypeTag: N = "materializeWeakTypeTag"
     val materializeTypeTag: N   = "materializeTypeTag"
@@ -583,6 +584,7 @@ object StdNames {
     val releaseFence : N        = "releaseFence"
     val retains: N              = "retains"
     val retainsByName: N        = "retainsByName"
+    val retainsCap: N           = "retainsCap"
     val rootMirror : N          = "rootMirror"
     val run: N                  = "run"
     val runOrElse: N            = "runOrElse"

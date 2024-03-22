@@ -27,7 +27,7 @@ import config.{Config, Feature}
 
 import dotty.tools.dotc.util.SourcePosition
 import dotty.tools.dotc.ast.untpd.{MemberDef, Modifiers, PackageDef, RefTree, Template, TypeDef, ValOrDefDef}
-import cc.{CaptureSet, CapturingType, toCaptureSet, IllegalCaptureRef}
+import cc.{CaptureSet, CapturingType, toCaptureSet, IllegalCaptureRef, isRetains}
 import dotty.tools.dotc.parsing.JavaParsers
 
 class RefinedPrinter(_ctx: Context) extends PlainPrinter(_ctx) {
@@ -244,7 +244,6 @@ class RefinedPrinter(_ctx: Context) extends PlainPrinter(_ctx) {
           case _ =>
             val tsym = tycon.typeSymbol
             if tycon.isRepeatedParam then toTextLocal(args.head) ~ "*"
-            else if tp.isConvertibleParam then "into " ~ toText(args.head)
             else if defn.isFunctionSymbol(tsym) then toTextFunction(tp)
             else if isInfixType(tp) then
               val l :: r :: Nil = args: @unchecked
@@ -309,7 +308,7 @@ class RefinedPrinter(_ctx: Context) extends PlainPrinter(_ctx) {
         toText(tp.argType) ~ " ?=>? " ~ toText(tp.resultType)
       case tp @ FunProto(args, resultType) =>
         "[applied to ("
-        ~ keywordText("using ").provided(tp.isContextualMethod)
+        ~ keywordText("using ").provided(tp.applyKind == ApplyKind.Using)
         ~ argsTreeText(args)
         ~ ") returning "
         ~ toText(resultType)
@@ -643,10 +642,13 @@ class RefinedPrinter(_ctx: Context) extends PlainPrinter(_ctx) {
         def toTextRetainsAnnot =
           try changePrec(GlobalPrec)(toText(arg) ~ "^" ~ toTextCaptureSet(captureSet))
           catch case ex: IllegalCaptureRef => toTextAnnot
-        if annot.symbol.maybeOwner == defn.RetainsAnnot
+        if annot.symbol.maybeOwner.isRetains
             && Feature.ccEnabled && !printDebug
             && Phases.checkCapturesPhase.exists // might be missing on -Ytest-pickler
         then toTextRetainsAnnot
+        else if annot.symbol.enclosingClass == defn.IntoAnnot && !printDebug then
+          atPrec(GlobalPrec):
+            Str("into ") ~ toText(arg)
         else toTextAnnot
       case EmptyTree =>
         "<empty>"
@@ -764,7 +766,7 @@ class RefinedPrinter(_ctx: Context) extends PlainPrinter(_ctx) {
         val spliceTypeText = (keywordStr("[") ~ toTextGlobal(tree.typeOpt) ~ keywordStr("]")).provided(printDebug && tree.typeOpt.exists)
         keywordStr("$") ~ spliceTypeText ~ {
           if args.isEmpty then keywordStr("{") ~ inPattern(toText(pattern)) ~ keywordStr("}")
-          else toText(pattern.symbol.name) ~ "(" ~ toTextGlobal(args, ", ") ~ ")"
+          else toText(pattern) ~ "(" ~ toTextGlobal(args, ", ") ~ ")"
         }
       case Hole(isTerm, idx, args, content) =>
         val (prefix, postfix) = if isTerm then ("{{{", "}}}") else ("[[[", "]]]")
@@ -1008,7 +1010,10 @@ class RefinedPrinter(_ctx: Context) extends PlainPrinter(_ctx) {
         var modsText = modText(constr.mods, constr.symbol, "", isType = false)
         if (!modsText.isEmpty) modsText = " " ~ modsText
         if (constr.mods.hasAnnotations && !constr.mods.hasFlags) modsText = modsText ~~ " this"
-        withEnclosingDef(constr) { addParamssText(tparamsTxt ~~ modsText, constr.trailingParamss) }
+        val ctorParamss =
+          // for fake `(x$1: Unit): Foo` constructor, don't print the param (span is not reconstructed correctly)
+          if constr.symbol.isAllOf(JavaParsers.fakeFlags) then Nil else constr.trailingParamss
+        withEnclosingDef(constr) { addParamssText(tparamsTxt ~~ modsText, ctorParamss) }
       }
     val parentsText = Text(impl.parents.map(constrText), if (ofNew) keywordStr(" with ") else ", ")
     val derivedText = Text(impl.derived.map(toText(_)), ", ")

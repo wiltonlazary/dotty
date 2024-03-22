@@ -112,7 +112,7 @@ class HoverTermSuite extends BaseHoverSuite:
         |  }
         |}
         |""".stripMargin,
-      // https://github.com/lampepfl/dotty/issues/8835
+      // https://github.com/scala/scala3/issues/8835
       """|object num: a.Xtension
          |""".stripMargin.hover
     )
@@ -637,3 +637,19 @@ class HoverTermSuite extends BaseHoverSuite:
         |def test(d: S[Int], f: S[Char]): AB[Int, String]
         |```""".stripMargin,
   )
+
+  @Test def `import-no-rename` =
+    check(
+      """
+        |import scala.collection
+        |
+        |object O {
+        |  <<val ab@@c = collection.Map(1 -> 2)>>
+        |}
+        |""".stripMargin,
+      """
+        |```scala
+        |val abc: scala.collection.Map[Int, Int]
+        |```
+        |""".stripMargin
+    )

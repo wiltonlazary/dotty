@@ -51,12 +51,14 @@ val experimentalDefinitionInLibrary = Set(
   "scala.annotation.capability",
   "scala.annotation.retains",
   "scala.annotation.retainsByName",
+  "scala.annotation.retainsCap",
   "scala.Pure",
   "scala.caps",
   "scala.caps$",
 
   //// New feature: into
-  "scala.annotation.allowConversions",
+  "scala.annotation.into",
+  "scala.annotation.internal.$into",
 
   //// New feature: @publicInBinary
   "scala.annotation.publicInBinary",
@@ -85,7 +87,6 @@ val experimentalDefinitionInLibrary = Set(
 
   // New feature: functions with erased parameters.
   // Need erasedDefinitions enabled.
-  "scala.runtime.ErasedFunction", // will be removed (now using PolyFunction)
   "scala.quoted.Quotes.reflectModule.MethodTypeMethods.erasedParams",
   "scala.quoted.Quotes.reflectModule.MethodTypeMethods.hasErasedParams",
   "scala.quoted.Quotes.reflectModule.TermParamClauseMethods.erasedArgs",

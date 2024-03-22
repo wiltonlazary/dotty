@@ -7,6 +7,7 @@ import scala.meta.pc.SymbolDocumentation
 import scala.meta.pc.SymbolSearch
 
 import dotty.tools.dotc.core.Contexts.Context
+import dotty.tools.dotc.core.Denotations.Denotation
 import dotty.tools.dotc.core.Flags
 import dotty.tools.dotc.core.Flags.*
 import dotty.tools.dotc.core.NameKinds.ContextBoundParamName
@@ -64,6 +65,9 @@ class ShortenedTypePrinter(
     )
 
   private val foundRenames = collection.mutable.LinkedHashMap.empty[Symbol, String]
+
+  def getUsedRenames: Map[Symbol, String] =
+    foundRenames.toMap.filter { case (k, v) => k.showName != v }
 
   def getUsedRenamesInfo(using Context): List[String] =
     foundRenames.map { (from, to) =>
@@ -250,9 +254,10 @@ class ShortenedTypePrinter(
     lazy val effectiveOwner = sym.effectiveOwner
     sym.isType && (effectiveOwner == defn.ScalaPackageClass || effectiveOwner == defn.ScalaPredefModuleClass)
 
-  def completionSymbol(sym: Symbol): String =
-    val info = sym.info.widenTermRefExpr
+  def completionSymbol(denotation: Denotation): String =
+    val info = denotation.info.widenTermRefExpr
     val typeSymbol = info.typeSymbol
+    val sym = denotation.symbol
 
     lazy val typeEffectiveOwner =
       if typeSymbol != NoSymbol then " " + fullNameString(typeSymbol.effectiveOwner)

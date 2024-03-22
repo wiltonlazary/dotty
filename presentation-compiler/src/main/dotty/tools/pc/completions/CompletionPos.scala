@@ -5,65 +5,46 @@ import java.net.URI
 
 import scala.meta.pc.OffsetParams
 
-import dotty.tools.dotc.ast.tpd.*
-import dotty.tools.dotc.ast.untpd.ImportSelector
+import dotty.tools.dotc.ast.untpd.*
 import dotty.tools.dotc.core.Contexts.*
-import dotty.tools.dotc.core.StdNames.*
-import dotty.tools.dotc.util.Chars
 import dotty.tools.dotc.util.SourcePosition
-import dotty.tools.dotc.util.Spans
+import dotty.tools.dotc.util.Spans.*
+import dotty.tools.dotc.interactive.Completion
 import dotty.tools.pc.utils.MtagsEnrichments.*
 
 import org.eclipse.lsp4j as l
-import scala.annotation.tailrec
 
-enum CompletionKind:
-  case Empty, Scope, Members
+case object Cursor:
+  val value = "CURSOR"
 
 case class CompletionPos(
-    kind: CompletionKind,
-    start: Int,
-    end: Int,
-    query: String,
-    cursorPos: SourcePosition,
-    sourceUri: URI
+  queryStart: Int,
+  identEnd: Int,
+  query: String,
+  originalCursorPosition: SourcePosition,
+  sourceUri: URI
 ):
-
-  def sourcePos: SourcePosition = cursorPos.withSpan(Spans.Span(start, end))
-  def stripSuffixEditRange: l.Range = new l.Range(cursorPos.offsetToPos(start), cursorPos.offsetToPos(end))
-  def toEditRange: l.Range = cursorPos.withStart(start).withEnd(cursorPos.point).toLsp
-
-end CompletionPos
+  def queryEnd: Int = originalCursorPosition.point
+  def stripSuffixEditRange: l.Range = new l.Range(originalCursorPosition.offsetToPos(queryStart), originalCursorPosition.offsetToPos(identEnd))
+  def toEditRange: l.Range = originalCursorPosition.withStart(queryStart).withEnd(originalCursorPosition.point).toLsp
+  def toSourcePosition: SourcePosition = originalCursorPosition.withSpan(Span(queryStart, queryEnd, queryEnd))
 
 object CompletionPos:
 
   def infer(
-      cursorPos: SourcePosition,
+      sourcePos: SourcePosition,
       offsetParams: OffsetParams,
-      treePath: List[Tree]
+      adjustedPath: List[Tree]
   )(using Context): CompletionPos =
-    infer(cursorPos, offsetParams.uri().nn, offsetParams.text().nn, treePath)
+    val identEnd = adjustedPath match
+      case (refTree: RefTree) :: _ if refTree.name.toString.contains(Cursor.value) =>
+        refTree.span.end - Cursor.value.length
+      case _ => sourcePos.end
 
-  def infer(
-      cursorPos: SourcePosition,
-      uri: URI,
-      text: String,
-      treePath: List[Tree]
-  )(using Context): CompletionPos =
-    val start = inferIdentStart(cursorPos, text, treePath)
-    val end = inferIdentEnd(cursorPos, text)
-    val query = text.substring(start, end)
-    val prevIsDot =
-      if start - 1 >= 0 then text.charAt(start - 1) == '.' else false
-    val kind =
-      if prevIsDot then CompletionKind.Members
-      else if isImportOrExportSelect(cursorPos, treePath) then
-        CompletionKind.Members
-      else if query.nn.isEmpty then CompletionKind.Empty
-      else CompletionKind.Scope
+    val query = Completion.completionPrefix(adjustedPath, sourcePos)
+    val start = sourcePos.end - query.length()
 
-    CompletionPos(kind, start, end, query.nn, cursorPos, uri)
-  end infer
+    CompletionPos(start, identEnd, query.nn, sourcePos, offsetParams.uri.nn)
 
   /**
    * Infer the indentation by counting the number of spaces in the given line.
@@ -86,64 +67,5 @@ object CompletionPos:
     do i += 1
     (i, tabIndented)
   end inferIndent
-
-  private def isImportOrExportSelect(
-      pos: SourcePosition,
-      path: List[Tree],
-  )(using Context): Boolean =
-    @tailrec
-    def loop(enclosing: List[Tree]): Boolean =
-      enclosing match
-        case head :: tl if !head.sourcePos.contains(pos) => loop(tl)
-        case (tree: (Import | Export)) :: _ =>
-          tree.selectors.exists(_.imported.sourcePos.contains(pos))
-        case _ => false
-
-    loop(path)
-
-
-  /**
-   * Returns the start offset of the identifier starting as the given offset position.
-   */
-  private def inferIdentStart(
-      pos: SourcePosition,
-      text: String,
-      path: List[Tree]
-  )(using Context): Int =
-    def fallback: Int =
-      var i = pos.point - 1
-      while i >= 0 && Chars.isIdentifierPart(text.charAt(i)) do i -= 1
-      i + 1
-    def loop(enclosing: List[Tree]): Int =
-      enclosing match
-        case Nil => fallback
-        case head :: tl =>
-          if !head.sourcePos.contains(pos) then loop(tl)
-          else
-            head match
-              case i: Ident => i.sourcePos.point
-              case s: Select =>
-                if s.name.toTermName == nme.ERROR || s.span.exists && pos.span.point < s.span.point
-                then fallback
-                else s.span.point
-              case Import(_, sel) =>
-                sel
-                  .collectFirst {
-                    case ImportSelector(imported, renamed, _)
-                        if imported.sourcePos.contains(pos) =>
-                      imported.sourcePos.point
-                  }
-                  .getOrElse(fallback)
-              case _ => fallback
-    loop(path)
-  end inferIdentStart
-
-  /**
-   * Returns the end offset of the identifier starting as the given offset position.
-   */
-  private def inferIdentEnd(pos: SourcePosition, text: String): Int =
-    var i = pos.point
-    while i < text.length() && Chars.isIdentifierPart(text.charAt(i)) do i += 1
-    i
 
 end CompletionPos

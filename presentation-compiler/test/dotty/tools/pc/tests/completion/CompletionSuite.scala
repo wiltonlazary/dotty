@@ -7,6 +7,7 @@ import dotty.tools.pc.base.BaseCompletionSuite
 import dotty.tools.pc.utils.MockEntries
 
 import org.junit.Test
+import org.junit.Ignore
 
 class CompletionSuite extends BaseCompletionSuite:
 
@@ -26,10 +27,10 @@ class CompletionSuite extends BaseCompletionSuite:
         |}""".stripMargin,
       """
         |List scala.collection.immutable
+        |List[A](elems: A*): List[A]
         |List - java.awt
         |List - java.util
-        |List - scala.collection.immutable
-        |List[A](elems: A*): CC[A]
+        |ListMap[K, V](elems: (K, V)*): ListMap[K, V]
         |""".stripMargin,
       topLines = Some(5)
     )
@@ -109,17 +110,17 @@ class CompletionSuite extends BaseCompletionSuite:
          |tabulate[A](n: Int)(f: Int => A): List[A]
          |unapplySeq[A](x: List[A] @uncheckedVariance): UnapplySeqWrapper[A]
          |unfold[A, S](init: S)(f: S => Option[(A, S)]): List[A]
-         |->[B](y: B): (A, B)
-         |ensuring(cond: Boolean): A
-         |ensuring(cond: A => Boolean): A
-         |ensuring(cond: Boolean, msg: => Any): A
-         |ensuring(cond: A => Boolean, msg: => Any): A
-         |fromSpecific(from: From)(it: IterableOnce[A]): C
-         |fromSpecific(it: IterableOnce[A]): C
-         |nn: x.type & T
-         |toFactory(from: From): Factory[A, C]
+         |->[B](y: B): (List.type, B)
+         |ensuring(cond: Boolean): List.type
+         |ensuring(cond: List.type => Boolean): List.type
+         |ensuring(cond: Boolean, msg: => Any): List.type
+         |ensuring(cond: List.type => Boolean, msg: => Any): List.type
+         |fromSpecific(from: Any)(it: IterableOnce[Nothing]): List[Nothing]
+         |fromSpecific(it: IterableOnce[Nothing]): List[Nothing]
+         |nn: List.type & List.type
+         |toFactory(from: Any): Factory[Nothing, List[Nothing]]
          |formatted(fmtstr: String): String
-         |→[B](y: B): (A, B)
+         |→[B](y: B): (List.type, B)
          |iterableFactory[A]: Factory[A, List[A]]
          |asInstanceOf[X0]: X0
          |equals(x$0: Any): Boolean
@@ -146,6 +147,7 @@ class CompletionSuite extends BaseCompletionSuite:
       "XtensionMethod(a: Int): XtensionMethod"
     )
 
+  @Ignore("This test should be handled by compiler fuzzy search")
   @Test def fuzzy =
     check(
       """
@@ -157,14 +159,14 @@ class CompletionSuite extends BaseCompletionSuite:
          |""".stripMargin
     )
 
+  @Ignore("This test should be handled by compiler fuzzy search")
   @Test def fuzzy1 =
     check(
       """
         |object A {
-        |  new PBuil@@
+        |  new PBuilder@@
         |}""".stripMargin,
-      """|ProcessBuilder java.lang
-         |ProcessBuilder - scala.sys.process
+      """|ProcessBuilder - scala.sys.process
          |ProcessBuilderImpl - scala.sys.process
          |""".stripMargin,
       filter = _.contains("ProcessBuilder")
@@ -178,7 +180,7 @@ class CompletionSuite extends BaseCompletionSuite:
         |  TrieMap@@
         |}""".stripMargin,
       """|TrieMap scala.collection.concurrent
-         |TrieMap[K, V](elems: (K, V)*): CC[K, V]
+         |TrieMap[K, V](elems: (K, V)*): TrieMap[K, V]
          |""".stripMargin
     )
 
@@ -515,8 +517,8 @@ class CompletionSuite extends BaseCompletionSuite:
       """.stripMargin,
       """|until(end: Int): Range
          |until(end: Int, step: Int): Range
-         |until(end: T): Exclusive[T]
-         |until(end: T, step: T): Exclusive[T]
+         |until(end: Long): Exclusive[Long]
+         |until(end: Long, step: Long): Exclusive[Long]
          |""".stripMargin,
       postProcessObtained = _.replace("Float", "Double"),
       stableOrder = false
@@ -886,7 +888,7 @@ class CompletionSuite extends BaseCompletionSuite:
       topLines = Some(2)
     )
 
-  // issues with scala 3 https://github.com/lampepfl/dotty/pull/13515
+  // issues with scala 3 https://github.com/scala/scala3/pull/13515
   @Test def ordering4 =
     check(
       s"""|class Main {
@@ -1187,7 +1189,7 @@ class CompletionSuite extends BaseCompletionSuite:
          |  val x = Bar[M](new Foo[Int]{})
          |  x.bar.m@@
          |""".stripMargin,
-      """|map[B](f: A => B): Foo[B]
+      """|map[B](f: Int => B): Foo[B]
          |""".stripMargin,
       topLines = Some(1)
     )
@@ -1606,7 +1608,7 @@ class CompletionSuite extends BaseCompletionSuite:
       assertSingleItem = false
     )
 
-  @Test def `prepend-instead-of-replace-duplicate-word` =
+  @Test def `prepend-duplicate-word` =
     checkEdit(
       """|object O:
          |  println@@println()
@@ -1620,10 +1622,10 @@ class CompletionSuite extends BaseCompletionSuite:
   @Test def `replace-when-inside` =
     checkEdit(
       """|object O:
-         |  print@@ln()
+         |  pri@@nt()
          |""".stripMargin,
       """|object O:
-         |  println()
+         |  print()
          |""".stripMargin,
       assertSingleItem = false
     )
@@ -1672,7 +1674,6 @@ class CompletionSuite extends BaseCompletionSuite:
       topLines = Some(5)
     )
 
-
   @Test def `import-rename` =
     check(
       """import scala.collection.{AbstractMap => Set@@}
@@ -1680,6 +1681,7 @@ class CompletionSuite extends BaseCompletionSuite:
       ""
     )
 
+  @Ignore
   @Test def `dont-crash-implicit-search` =
     check(
       """object M:
@@ -1687,3 +1689,175 @@ class CompletionSuite extends BaseCompletionSuite:
         |""".stripMargin,
       ""
     )
+
+  @Test def `extension-definition-type-variable-inference` =
+    check(
+      """|object M:
+         |  extension [T](xs: List[T]) def test(p: T => Boolean): List[T] = ???
+         |  List(1,2,3).tes@@
+         |""".stripMargin,
+      """|test(p: Int => Boolean): List[Int]
+         |""".stripMargin
+    )
+
+  @Test def `old-style-extension-type-variable-inference` =
+    check(
+      """|object M:
+         |  implicit class ListUtils[T](xs: List[T]) {
+         |    def test(p: T => Boolean): List[T] = ???
+         |  }
+         |  List(1,2,3).tes@@
+         |""".stripMargin,
+      """|test(p: Int => Boolean): List[Int]
+         |""".stripMargin
+    )
+
+  @Test def `instantiate-type-vars-in-extra-apply-completions` =
+    check(
+      """|object M:
+         |  val fooBar = List(123)
+         |  foo@@
+         |""".stripMargin,
+      """|fooBar: List[Int]
+         |fooBar(n: Int): Int
+         |""".stripMargin
+    )
+
+  @Test def `show-underlying-type-instead-of-CC` =
+    check(
+      """|object M:
+         |  List@@
+         |""".stripMargin,
+      """|List[A](elems: A*): List[A]
+         |ListMap[K, V](elems: (K, V)*): ListMap[K, V]
+         |""".stripMargin,
+      filter = _.contains("[")
+    )
+
+  @Test def `empty-import` =
+    check(
+      """|import @@
+         |""".stripMargin,
+      """|java <root>
+         |javax <root>
+         |""".stripMargin,
+      filter = _.startsWith("java")
+    )
+
+  @Test def `empty-import-selector` =
+    check(
+      """|import java.@@
+         |""".stripMargin,
+      """|util java
+         |""".stripMargin,
+      filter = _.startsWith("util")
+    )
+
+  @Test def `empty-export` =
+    check(
+      """|export @@
+         |""".stripMargin,
+      """|java <root>
+         |javax <root>
+         |""".stripMargin,
+      filter = _.startsWith("java")
+    )
+
+  @Test def `empty-export-selector` =
+    check(
+      """|export java.@@
+         |""".stripMargin,
+      """|util java
+         |""".stripMargin,
+      filter = _.startsWith("util")
+    )
+
+  @Test def `annotation` =
+    check(
+      """|@Over@@
+         |object M {}
+         |""".stripMargin,
+      """|Override java.lang
+         |""".stripMargin,
+      filter = _ == "Override java.lang"
+    )
+
+  @Test def `no-annotation` =
+    check(
+      """|
+         |object M {
+         |  Overr@@
+         |}
+         |""".stripMargin,
+      """|Override java.lang
+         |""".stripMargin,
+      filter = _ == "Override java.lang"
+    )
+
+  @Test def `no-annotation-param-first-pos` =
+    check(
+      """|
+         |object M {
+         |  def hello(Overr@@)
+         |}
+         |""".stripMargin,
+      ""
+    )
+
+  @Test def `no-annotation-param-second-pos` =
+    check(
+      """|
+         |object M {
+         |  def hello(x: Int, Overr@@)
+         |}
+         |""".stripMargin,
+      ""
+    )
+
+  @Test def `no-annotation-param-second-list` =
+    check(
+      """|
+         |object M {
+         |  def hello(x: Int)(Overr@@)
+         |}
+         |""".stripMargin,
+      ""
+    )
+
+
+  @Test def `annotation-param-first-pos` =
+    check(
+      """|
+         |object M {
+         |  def hello(@Overr@@)
+         |}
+         |""".stripMargin,
+      """|Override java.lang
+         |""".stripMargin,
+      filter = _ == "Override java.lang"
+    )
+
+  @Test def `annotation-param-second-pos` =
+    check(
+      """|
+         |object M {
+         |  def hello(x: Int, @Overr@@)
+         |}
+         |""".stripMargin,
+      """|Override java.lang
+         |""".stripMargin,
+      filter = _ == "Override java.lang"
+    )
+
+  @Test def `annotation-param-second-list` =
+    check(
+      """|
+         |object M {
+         |  def hello(x: Int)( @Overr@@)
+         |}
+         |""".stripMargin,
+      """|Override java.lang
+         |""".stripMargin,
+      filter = _ == "Override java.lang"
+    )
+

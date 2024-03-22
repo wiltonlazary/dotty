@@ -151,7 +151,6 @@ class Scala2Unpickler(bytes: Array[Byte], classRoot: ClassDenotation, moduleClas
   assert(moduleRoot.isTerm)
 
   checkVersion(using ictx)
-  checkScala2Stdlib(using ictx)
 
   private val loadingMirror = defn(using ictx) // was: mirrorThatLoaded(classRoot)
 
@@ -237,9 +236,6 @@ class Scala2Unpickler(bytes: Array[Byte], classRoot: ClassDenotation, moduleClas
         "\n found: " + major + "." + minor +
         " in " + source)
   }
-
-  private def checkScala2Stdlib(using Context): Unit =
-    assert(!ctx.settings.YcompileScala2Library.value, "No Scala 2 libraries should be unpickled under -Ycompile-scala2-library")
 
   /** The `decls` scope associated with given symbol */
   protected def symScope(sym: Symbol): Scope = symScopes.getOrElseUpdate(sym, newScope(0))
@@ -449,8 +445,6 @@ class Scala2Unpickler(bytes: Array[Byte], classRoot: ClassDenotation, moduleClas
        // Scala 2 sometimes pickle the same type parameter symbol multiple times
        // (see i11173 for an example), but we should only unpickle it once.
        || tag == TYPEsym && flags.is(TypeParam) && symScope(owner).lookup(name.asTypeName).exists
-       // We discard the private val representing a case accessor. We only load the case accessor def.
-       || flags.isAllOf(CaseAccessor| PrivateLocal, butNot = Method)
     then
       // skip this member
       return NoSymbol
@@ -538,7 +532,10 @@ class Scala2Unpickler(bytes: Array[Byte], classRoot: ClassDenotation, moduleClas
                 // parameter unpickling and try to emulate it.
                 !completer.areParamsInitialized
               case _ =>
-                true)
+                true) &&
+            // We discard the private val representing a case accessor. We only enter the case accessor def.
+            // We do need to load these symbols to read properly unpickle the annotations on the symbol (see sbt-test/scala2-compat/i19421).
+            !flags.isAllOf(CaseAccessor | PrivateLocal, butNot = Method)
 
         if (canEnter)
           owner.asClass.enter(sym, symScope(owner))
@@ -854,7 +851,7 @@ class Scala2Unpickler(bytes: Array[Byte], classRoot: ClassDenotation, moduleClas
         }
         else if args.nonEmpty then
           tycon.safeAppliedTo(EtaExpandIfHK(sym.typeParams, args.map(translateTempPoly)))
-        else if (sym.typeParams.nonEmpty) tycon.etaExpand(sym.typeParams)
+        else if (sym.typeParams.nonEmpty) tycon.etaExpand
         else tycon
       case TYPEBOUNDStpe =>
         val lo = readTypeRef()

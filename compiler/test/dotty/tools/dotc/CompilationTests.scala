@@ -31,7 +31,7 @@ class CompilationTests {
   @Test def pos: Unit = {
     implicit val testGroup: TestGroup = TestGroup("compilePos")
     var tests = List(
-      compileFilesInDir("tests/pos", defaultOptions.and("-Ysafe-init", "-Wunused:all", "-Xlint:private-shadow", "-Xlint:type-parameter-shadow"), FileFilter.include(TestSources.posLintingAllowlist)),
+      compileFilesInDir("tests/pos", defaultOptions.and("-Ysafe-init", "-Wunused:all", "-Wshadow:private-shadow", "-Wshadow:type-parameter-shadow"), FileFilter.include(TestSources.posLintingAllowlist)),
       compileFilesInDir("tests/pos", defaultOptions.and("-Ysafe-init"), FileFilter.exclude(TestSources.posLintingAllowlist)),
       compileFilesInDir("tests/pos-deep-subtype", allowDeepSubtypes),
       compileFilesInDir("tests/pos-special/sourcepath/outer", defaultOptions.and("-sourcepath", "tests/pos-special/sourcepath")),
@@ -215,9 +215,8 @@ class CompilationTests {
   // initialization tests
   @Test def checkInitGlobal: Unit = {
     implicit val testGroup: TestGroup = TestGroup("checkInitGlobal")
-    val options = defaultOptions.and("-Ysafe-init-global", "-Xfatal-warnings")
-    compileFilesInDir("tests/init-global/neg", options, FileFilter.exclude(TestSources.negInitGlobalScala2LibraryTastyBlacklisted)).checkExpectedErrors()
-    compileFilesInDir("tests/init-global/pos", options, FileFilter.exclude(TestSources.posInitGlobalScala2LibraryTastyBlacklisted)).checkCompile()
+    compileFilesInDir("tests/init-global/warn", defaultOptions.and("-Ysafe-init-global"), FileFilter.exclude(TestSources.negInitGlobalScala2LibraryTastyBlacklisted)).checkWarnings()
+    compileFilesInDir("tests/init-global/pos", defaultOptions.and("-Ysafe-init-global", "-Xfatal-warnings"), FileFilter.exclude(TestSources.posInitGlobalScala2LibraryTastyBlacklisted)).checkCompile()
   }
 
   // initialization tests

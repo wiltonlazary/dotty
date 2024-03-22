@@ -95,7 +95,7 @@ object Contexts {
   inline def atPhaseNoEarlier[T](limit: Phase)(inline op: Context ?=> T)(using Context): T =
     op(using if !limit.exists || limit <= ctx.phase then ctx else ctx.withPhase(limit))
 
-  inline def inMode[T](mode: Mode)(inline op: Context ?=> T)(using ctx: Context): T =
+  inline private def inMode[T](mode: Mode)(inline op: Context ?=> T)(using ctx: Context): T =
     op(using if mode != ctx.mode then ctx.fresh.setMode(mode) else ctx)
 
   inline def withMode[T](mode: Mode)(inline op: Context ?=> T)(using ctx: Context): T =
@@ -861,8 +861,7 @@ object Contexts {
                        with Phases.PhasesBase
                        with Plugins {
 
-    /** The applicable settings */
-    val settings: ScalaSettings = new ScalaSettings
+    val settings: ScalaSettings = ScalaSettings
 
     /** The initial context */
     val initialCtx: Context = FreshContext.initial(this: @unchecked, settings)

@@ -38,8 +38,7 @@ class CompletionKeywordSuite extends BaseCompletionSuite:
         |  // tr@@
         |}
         |""".stripMargin,
-      """|transient scala (commit: '')
-         |transparentTrait - scala.annotation (commit: '')""".stripMargin,
+      "",
       includeCommitCharacter = true
     )
 
@@ -58,8 +57,7 @@ class CompletionKeywordSuite extends BaseCompletionSuite:
         |  **/
         |}
         |""".stripMargin,
-     """|transient scala (commit: '')
-        |transparentTrait - scala.annotation (commit: '')""".stripMargin,
+     "",
       includeCommitCharacter = true
     )
 
@@ -414,12 +412,7 @@ class CompletionKeywordSuite extends BaseCompletionSuite:
         |}
       """.stripMargin,
       """|def
-         |deprecated scala
-         |deprecatedInheritance scala
-         |deprecatedName scala
-         |deprecatedOverriding scala
          |""".stripMargin,
-      topLines = Some(5)
     )
 
   @Test def `protected-val` =
@@ -433,7 +426,6 @@ class CompletionKeywordSuite extends BaseCompletionSuite:
       """.stripMargin,
       """|val
          |var
-         |varargs - scala.annotation
          |""".stripMargin
     )
 
@@ -472,13 +464,8 @@ class CompletionKeywordSuite extends BaseCompletionSuite:
          |  def hello(u@@)
          |}""".stripMargin,
       """|using (commit: '')
-         |unsafeExceptions scala (commit: '')
-         |unchecked scala (commit: '')
-         |unsafe - scala.caps (commit: '')
-         |unsafeNulls - scala.runtime.stdLibPatches.language (commit: '')
          |""".stripMargin,
       includeCommitCharacter = true,
-      topLines = Some(5)
     )
 
   @Test def `not-using` =
@@ -486,12 +473,7 @@ class CompletionKeywordSuite extends BaseCompletionSuite:
       """|object A{
          |  def hello(a: String, u@@)
          |}""".stripMargin,
-      """|unsafeExceptions scala
-         |unchecked scala
-         |unsafe - scala.caps
-         |unsafeNulls - scala.runtime.stdLibPatches.language
-         |unused - scala.annotation """.stripMargin,
-      topLines = Some(5)
+      "",
     )
 
   @Test def `extends-class` =

@@ -25,7 +25,7 @@ trait MacroAnnotation extends StaticAnnotation:
    *  #### Restrictions
    *   - All definitions in the result must have the same owner. The owner can be recovered from `Symbol.spliceOwner`.
    *     - Special case: an annotated top-level `def`, `val`, `var`, `lazy val` can return a `class`/`object`
-definition that is owned by the package or package object.
+   *                     definition that is owned by the package or package object.
    *   - Can not return a `type`.
    *   - Annotated top-level `class`/`object` can not return top-level `def`, `val`, `var`, `lazy val`.
    *   - Can not see new definition in user written code.
@@ -42,7 +42,7 @@ definition that is owned by the package or package object.
    *  This example shows how to modify a `def` and add a `val` next to it using a macro annotation.
    *  ```scala
    *  import scala.quoted.*
-   *  import scala.collection.mutable
+   *  import scala.collection.concurrent
    *
    *  class memoize extends MacroAnnotation:
    *    def transform(using Quotes)(tree: quotes.reflect.Definition): List[quotes.reflect.Definition] =
@@ -52,14 +52,14 @@ definition that is owned by the package or package object.
    *          (param.tpt.tpe.asType, tpt.tpe.asType) match
    *            case ('[t], '[u]) =>
    *              val cacheName = Symbol.freshName(name + "Cache")
-   *              val cacheSymbol = Symbol.newVal(Symbol.spliceOwner, cacheName, TypeRepr.of[mutable.Map[t, u]], Flags.Private, Symbol.noSymbol)
+   *              val cacheSymbol = Symbol.newVal(Symbol.spliceOwner, cacheName, TypeRepr.of[concurrent.Map[t, u]], Flags.Private, Symbol.noSymbol)
    *              val cacheRhs =
    *                given Quotes = cacheSymbol.asQuotes
-   *                '{ mutable.Map.empty[t, u] }.asTerm
+   *                '{ concurrent.TrieMap.empty[t, u] }.asTerm
    *              val cacheVal = ValDef(cacheSymbol, Some(cacheRhs))
    *              val newRhs =
    *                given Quotes = tree.symbol.asQuotes
-   *                val cacheRefExpr = Ref(cacheSymbol).asExprOf[mutable.Map[t, u]]
+   *                val cacheRefExpr = Ref(cacheSymbol).asExprOf[concurrent.Map[t, u]]
    *                val paramRefExpr = Ref(param.symbol).asExprOf[t]
    *                val rhsExpr = rhsTree.asExprOf[u]
    *                '{ $cacheRefExpr.getOrElseUpdate($paramRefExpr, $rhsExpr) }.asTerm
@@ -82,7 +82,7 @@ definition that is owned by the package or package object.
    *  and the macro will modify the definition to create
    *  ```scala
    *   val fibCache$macro$1 =
-   *     scala.collection.mutable.Map.empty[Int, Int]
+   *     scala.collection.concurrent.TrieMap.empty[Int, Int]
    *   def fib(n: Int): Int =
    *     fibCache$macro$1.getOrElseUpdate(
    *       n,

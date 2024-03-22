@@ -261,7 +261,7 @@ class CompletionCaseSuite extends BaseCompletionSuite:
         |}""".stripMargin,
       """|case None => scala
          |case Some(value) => scala
-         |case (exhaustive) Option (2 cases)
+         |case (exhaustive) Option[Int] (2 cases)
          |""".stripMargin
     )
 
@@ -303,7 +303,7 @@ class CompletionCaseSuite extends BaseCompletionSuite:
         |}""".stripMargin,
       """|case None => scala
          |case Some(value) => scala
-         |case (exhaustive) Option (2 cases)
+         |case (exhaustive) Option[Int] (2 cases)
          |""".stripMargin
     )
 
@@ -317,7 +317,7 @@ class CompletionCaseSuite extends BaseCompletionSuite:
         |}""".stripMargin,
       """|case None => scala
          |case Some(value) => scala
-         |case (exhaustive) Option (2 cases)
+         |case (exhaustive) Option[Int] (2 cases)
          |""".stripMargin
     )
 
@@ -531,7 +531,7 @@ class CompletionCaseSuite extends BaseCompletionSuite:
          |""".stripMargin
     )
 
-  @Test def `private-member` =
+  @Test def `private-member1` =
     check(
       """
         |package example
@@ -542,7 +542,9 @@ class CompletionCaseSuite extends BaseCompletionSuite:
         |    ca@@
         |  }
         |}""".stripMargin,
-      ""
+      """
+        |case
+        |""".stripMargin
     )
 
   @Test def `private-member-2` =
@@ -722,3 +724,58 @@ class CompletionCaseSuite extends BaseCompletionSuite:
          |""".stripMargin,
       "case (Int, Int) => scala",
     )
+
+  @Test def `keyword-only` =
+    check(
+      """
+        |sealed trait Alpha
+        |object A {
+        |  List.empty[Alpha].groupBy{
+        |    ca@@
+        |  }
+        |}
+        |""".stripMargin,
+      "case",
+    )
+
+  @Test def `union-type` =
+    check(
+     """
+       |case class Foo(a: Int)
+       |case class Bar(b: Int)
+       |
+       |object O {
+       |  val x: Foo | Bar = ???
+       |  val y  = List(x).map{ ca@@ }
+       |}""".stripMargin,
+     """|case Bar(b) => test
+        |case Foo(a) => test
+        |case (exhaustive) Foo | Bar (2 cases)
+        |""".stripMargin
+    )
+
+
+  @Test def `union-type-edit` =
+    checkEdit(
+      """
+        |case class Foo(a: Int)
+        |case class Bar(b: Int)
+        |
+        |object O {
+        |  val x: Foo | Bar = ???
+        |  val y  = List(x).map{ ca@@ }
+        |}""".stripMargin,
+      s"""|case class Foo(a: Int)
+          |case class Bar(b: Int)
+          |
+          |object O {
+          |  val x: Foo | Bar = ???
+          |  val y  = List(x).map{ 
+          |\tcase Foo(a) => $$0
+          |\tcase Bar(b) =>
+          | }
+          |}
+          |""".stripMargin,
+      filter = _.contains("exhaustive")
+    )
+

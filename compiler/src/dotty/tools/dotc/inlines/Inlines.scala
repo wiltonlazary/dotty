@@ -5,6 +5,7 @@ package inlines
 import ast.*, core.*
 import Flags.*, Symbols.*, Types.*, Decorators.*, Constants.*, Contexts.*
 import StdNames.{tpnme, nme}
+import NameOps.*
 import typer.*
 import NameKinds.BodyRetainerName
 import SymDenotations.SymDenotation
@@ -54,6 +55,16 @@ object Inlines:
   def needsInlining(tree: Tree)(using Context): Boolean = tree match {
     case Block(_, expr) => needsInlining(expr)
     case _ =>
+      def isUnapplyExpressionWithDummy: Boolean =
+        // The first step of typing an `unapply` consists in typing the call
+        // with a dummy argument (see Applications.typedUnApply). We delay the
+        // inlining of this call.
+        def rec(tree: Tree): Boolean = tree match
+          case Apply(_, ProtoTypes.dummyTreeOfType(_) :: Nil) => true
+          case Apply(fn, _) => rec(fn)
+          case _ => false
+        tree.symbol.name.isUnapplyName && rec(tree)
+
       isInlineable(tree.symbol)
       && !tree.tpe.widenTermRefExpr.isInstanceOf[MethodOrPoly]
       && StagingLevel.level == 0
@@ -64,12 +75,12 @@ object Inlines:
       && !ctx.typer.hasInliningErrors
       && !ctx.base.stopInlining
       && !ctx.mode.is(Mode.NoInline)
+      && !isUnapplyExpressionWithDummy
   }
 
   private def needsTransparentInlining(tree: Tree)(using Context): Boolean =
     tree.symbol.is(Transparent)
     || ctx.mode.is(Mode.ForceInline)
-    || ctx.settings.YforceInlineWhileTyping.value
 
   /** Try to inline a call to an inline method. Fail with error if the maximal
    *  inline depth is exceeded.
@@ -89,7 +100,7 @@ object Inlines:
     if ctx.isAfterTyper then
       // During typer we wait with cross version checks until PostTyper, in order
       // not to provoke cyclic references. See i16116 for a test case.
-      CrossVersionChecks.checkExperimentalRef(tree.symbol, tree.srcPos)
+      CrossVersionChecks.checkRef(tree.symbol, tree.srcPos)
 
     if tree.symbol.isConstructor then return tree // error already reported for the inline constructor definition
 
@@ -172,10 +183,10 @@ object Inlines:
   /** Try to inline a pattern with an inline unapply method. Fail with error if the maximal
    *  inline depth is exceeded.
    *
-   *  @param unapp   The tree of the pattern to inline
+   *  @param fun The function of an Unapply node
    *  @return   An `Unapply` with a `fun` containing the inlined call to the unapply
    */
-  def inlinedUnapply(unapp: tpd.UnApply)(using Context): Tree =
+  def inlinedUnapplyFun(fun: tpd.Tree)(using Context): Tree =
     // We cannot inline the unapply directly, since the pattern matcher relies on unapply applications
     // as signposts what to do. On the other hand, we can do the inlining only in typer, not afterwards.
     // So the trick is to create a "wrapper" unapply in an anonymous class that has the inlined unapply
@@ -189,7 +200,6 @@ object Inlines:
     // transforms the patterns into terms, the `inlinePatterns` phase removes this anonymous class by β-reducing
     // the call to the `unapply`.
 
-    val fun = unapp.fun
     val sym = fun.symbol
 
     val newUnapply = AnonClass(ctx.owner, List(defn.ObjectType), sym.coord) { cls =>
@@ -199,7 +209,7 @@ object Inlines:
       val unapplyInfo = fun.tpe.widen
       val unapplySym = newSymbol(cls, sym.name.toTermName, Synthetic | Method, unapplyInfo, coord = sym.coord).entered
 
-      val unapply = DefDef(unapplySym.asTerm, argss => fun.appliedToArgss(argss).withSpan(unapp.span))
+      val unapply = DefDef(unapplySym.asTerm, argss => fun.appliedToArgss(argss).withSpan(fun.span))
 
       if sym.is(Transparent) then
         // Inline the body and refine the type of the unapply method
@@ -214,9 +224,8 @@ object Inlines:
         List(unapply)
     }
 
-    val newFun = newUnapply.select(sym.name).withSpan(unapp.span)
-    cpy.UnApply(unapp)(fun = newFun)
-  end inlinedUnapply
+    newUnapply.select(sym.name).withSpan(fun.span)
+  end inlinedUnapplyFun
 
   /** For a retained inline method, another method that keeps track of
    *  the body that is kept at runtime. For instance, an inline method
@@ -443,6 +452,9 @@ object Inlines:
             unrollTupleTypes(tail).map(head :: _)
           case tpe: TermRef if tpe.symbol == defn.EmptyTupleModule =>
             Some(Nil)
+          case tpRef: TypeRef => tpRef.info match
+            case MatchAlias(alias) => unrollTupleTypes(alias.tryNormalize)
+            case _ => None
           case _ =>
             None
 
@@ -481,14 +493,14 @@ object Inlines:
 
       // Take care that only argument bindings go into `bindings`, since positions are
       // different for bindings from arguments and bindings from body.
-      val res = tpd.Inlined(call, bindings, expansion)
+      val inlined = tpd.Inlined(call, bindings, expansion)
 
-      if !hasOpaqueProxies then res
+      if !hasOpaqueProxies then inlined
       else
         val target =
-          if inlinedMethod.is(Transparent) then call.tpe & res.tpe
+          if inlinedMethod.is(Transparent) then call.tpe & inlined.tpe
           else call.tpe
-        res.ensureConforms(target)
+        inlined.ensureConforms(target)
           // Make sure that the sealing with the declared type
           // is type correct. Without it we might get problems since the
           // expression's type is the opaque alias but the call's type is
