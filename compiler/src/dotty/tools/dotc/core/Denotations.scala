@@ -580,7 +580,7 @@ object Denotations {
 
   /** A non-overloaded denotation */
   abstract class SingleDenotation(symbol: Symbol, initInfo: Type, isType: Boolean) extends Denotation(symbol, initInfo, isType) {
-    protected def newLikeThis(symbol: Symbol, info: Type, pre: Type, isRefinedMethod: Boolean): SingleDenotation
+    protected def newLikeThis(symbol: Symbol, info: Type, pre: Type, isRefinedMethod: Boolean)(using Context): SingleDenotation
 
     final def name(using Context): Name = symbol.name
 
@@ -719,7 +719,8 @@ object Denotations {
         ctx.runId >= validFor.runId
         || ctx.settings.YtestPickler.value // mixing test pickler with debug printing can travel back in time
         || ctx.mode.is(Mode.Printing)  // no use to be picky when printing error messages
-        || symbol.isOneOf(ValidForeverFlags),
+        || symbol.isOneOf(ValidForeverFlags)
+        || ctx.tolerateErrorsForBestEffort,
         s"denotation $this invalid in run ${ctx.runId}. ValidFor: $validFor")
       var d: SingleDenotation = this
       while ({
@@ -741,6 +742,8 @@ object Denotations {
      *     the old version otherwise.
      *   - If the symbol did not have a denotation that was defined at the current phase
      *     return a NoDenotation instead.
+     *   - If the symbol was first defined in one of the transform phases (after pickling), it should not
+     *     be visible in new runs, so also return a NoDenotation.
      */
     private def bringForward()(using Context): SingleDenotation = {
       this match {
@@ -754,6 +757,7 @@ object Denotations {
       }
       if (!symbol.exists) return updateValidity()
       if (!coveredInterval.containsPhaseId(ctx.phaseId)) return NoDenotation
+      if (coveredInterval.firstPhaseId >= Phases.firstTransformPhase.id) return NoDenotation
       if (ctx.debug) traceInvalid(this)
       staleSymbolError
     }
@@ -955,7 +959,7 @@ object Denotations {
     }
 
     def staleSymbolError(using Context): Nothing =
-      if symbol.isPackageObject && ctx.run != null && ctx.run.nn.isCompilingSuspended
+      if symbol.lastKnownDenotation.isPackageObject && ctx.run != null && ctx.run.nn.isCompilingSuspended
       then throw StaleSymbolTypeError(symbol)
       else throw StaleSymbolException(staleSymbolMsg)
 
@@ -1162,11 +1166,11 @@ object Denotations {
     prefix: Type) extends NonSymSingleDenotation(symbol, initInfo, prefix) {
     validFor = initValidFor
     override def hasUniqueSym: Boolean = true
-    protected def newLikeThis(s: Symbol, i: Type, pre: Type, isRefinedMethod: Boolean): SingleDenotation =
+    protected def newLikeThis(s: Symbol, i: Type, pre: Type, isRefinedMethod: Boolean)(using Context): SingleDenotation =
       if isRefinedMethod then
-        new JointRefDenotation(s, i, validFor, pre, isRefinedMethod)
+        new JointRefDenotation(s, i, currentStablePeriod, pre, isRefinedMethod)
       else
-        new UniqueRefDenotation(s, i, validFor, pre)
+        new UniqueRefDenotation(s, i, currentStablePeriod, pre)
   }
 
   class JointRefDenotation(
@@ -1177,15 +1181,15 @@ object Denotations {
     override val isRefinedMethod: Boolean) extends NonSymSingleDenotation(symbol, initInfo, prefix) {
     validFor = initValidFor
     override def hasUniqueSym: Boolean = false
-    protected def newLikeThis(s: Symbol, i: Type, pre: Type, isRefinedMethod: Boolean): SingleDenotation =
-      new JointRefDenotation(s, i, validFor, pre, isRefinedMethod)
+    protected def newLikeThis(s: Symbol, i: Type, pre: Type, isRefinedMethod: Boolean)(using Context): SingleDenotation =
+      new JointRefDenotation(s, i, currentStablePeriod, pre, isRefinedMethod)
   }
 
   class ErrorDenotation(using Context) extends NonSymSingleDenotation(NoSymbol, NoType, NoType) {
     override def exists: Boolean = false
     override def hasUniqueSym: Boolean = false
     validFor = Period.allInRun(ctx.runId)
-    protected def newLikeThis(s: Symbol, i: Type, pre: Type, isRefinedMethod: Boolean): SingleDenotation =
+    protected def newLikeThis(s: Symbol, i: Type, pre: Type, isRefinedMethod: Boolean)(using Context): SingleDenotation =
       this
   }
 

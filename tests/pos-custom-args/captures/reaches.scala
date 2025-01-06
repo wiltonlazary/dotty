@@ -1,3 +1,5 @@
+import caps.use
+
 class C
 def f(xs: List[C^]) =
   val y = xs
@@ -10,7 +12,17 @@ class Ref[T](init: T):
   def get: T = x
   def set(y: T) = { x = y }
 
-def runAll(xs: List[Proc]): Unit =
+class List[+A]:
+  def head: A = ???
+  def tail: List[A] = ???
+  def map[B](f: A -> B): List[B] = ???
+  def nonEmpty: Boolean = ???
+
+extension [A](x: A) def :: (xs: List[A]): List[A] = ???
+
+object Nil extends List[Nothing]
+
+def runAll(@use xs: List[Proc]): Unit =
   var cur: List[() ->{xs*} Unit] = xs  // OK, by revised VAR
   while cur.nonEmpty do
     val next: () ->{xs*} Unit = cur.head
@@ -35,10 +47,10 @@ def compose1[A, B, C](f: A => B, g: B => C): A ->{f, g} C =
 def compose2[A, B, C](f: A => B, g: B => C): A => C =
   z => g(f(z))
 
-def mapCompose[A](ps: List[(A => A, A => A)]): List[A ->{ps*} A] =
-  ps.map((x, y) => compose1(x, y))
+//def mapCompose[A](ps: List[(A => A, A => A)]): List[A ->{ps*} A] =
+//  ps.map((x, y) => compose1(x, y)) // Does not work, see neg-customargs/../reaches2.scala
 
-@annotation.capability class IO
+class IO extends caps.Capability
 
 def test(io: IO) =
   val a: () ->{io} Unit = () => ()

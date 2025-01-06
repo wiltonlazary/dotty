@@ -15,6 +15,7 @@ import transform.SyntheticMembers.*
 import util.Property
 import ast.Trees.genericEmptyTree
 import annotation.{tailrec, constructorOnly}
+import ast.tpd
 import ast.tpd.*
 import Synthesizer.*
 import sbt.ExtractDependencies.*
@@ -186,7 +187,8 @@ class Synthesizer(typer: Typer)(using @constructorOnly c: Context):
         // val x: String = null.asInstanceOf[String]
         // if (x == null) {} // error: x is non-nullable
         // if (x.asInstanceOf[String|Null] == null) {} // ok
-        cls1 == defn.NullClass && cls1 == cls2
+        if cls1 == defn.NullClass || cls2 == defn.NullClass then cls1 == cls2
+        else cls1 == defn.NothingClass || cls2 == defn.NothingClass
       else if cls1 == defn.NullClass then
         cls1 == cls2 || cls2.derivesFrom(defn.ObjectClass)
       else if cls2 == defn.NullClass then
@@ -236,6 +238,23 @@ class Synthesizer(typer: Typer)(using @constructorOnly c: Context):
         EmptyTreeNoError
   end synthesizedValueOf
 
+  val synthesizedSingleton: SpecialHandler = (formal, span) => formal match
+    case PreciseConstrained(tp, true) =>
+      if tp.isSingletonBounded(frozen = false) then
+        withNoErrors:
+          ref(defn.Compiletime_erasedValue).appliedToType(formal).withSpan(span)
+      else
+        withErrors(i"$tp is not a singleton")
+    case _ =>
+      EmptyTreeNoError
+
+  val synthesizedPrecise: SpecialHandler = (formal, span) => formal match
+    case PreciseConstrained(tp, false) =>
+      withNoErrors:
+        ref(defn.Compiletime_erasedValue).appliedToType(formal).withSpan(span)
+    case _ =>
+      EmptyTreeNoError
+
   /** Create an anonymous class `new Object { type MirroredMonoType = ... }`
    *  and mark it with given attachment so that it is made into a mirror at PostTyper.
    */
@@ -265,10 +284,10 @@ class Synthesizer(typer: Typer)(using @constructorOnly c: Context):
       .refinedWith(tpnme.MirroredType, TypeAlias(mirroredType))
       .refinedWith(tpnme.MirroredLabel, TypeAlias(ConstantType(Constant(label.toString))))
 
-  /** A path referencing the companion of class type `clsType` */
-  private def companionPath(clsType: Type, span: Span)(using Context) =
-    val ref = pathFor(clsType.mirrorCompanionRef)
-    assert(ref.symbol.is(Module) && (clsType.classSymbol.is(ModuleClass) || (ref.symbol.companionClass == clsType.classSymbol)))
+  /** A path referencing the companion of `cls` with prefix `pre` */
+  private def companionPath(pre: Type, cls: Symbol, span: Span)(using Context) =
+    val ref = tpd.ref(TermRef(pre, cls.companionModule))
+    assert(ref.symbol.is(Module) && (cls.is(ModuleClass) || ref.symbol.companionClass == cls))
     ref.withSpan(span)
 
   private def checkFormal(formal: Type)(using Context): Boolean =
@@ -379,7 +398,9 @@ class Synthesizer(typer: Typer)(using @constructorOnly c: Context):
                 // avoid type aliases for tuples
                 Right(MirrorSource.GenericTuple(types))
               case _ => reduce(tp.underlying)
-          case tp: MatchType => reduce(tp.normalized)
+          case tp: MatchType =>
+            val n = tp.tryNormalize
+            if n.exists then reduce(n) else Left(i"its subpart `$tp` is an unreducible match type.")
           case _ => reduce(tp.superType)
       case tp @ AndType(l, r) =>
         for
@@ -426,7 +447,7 @@ class Synthesizer(typer: Typer)(using @constructorOnly c: Context):
           .refinedWith(tpnme.MirroredElemLabels, TypeAlias(elemsLabels))
       }
       val mirrorRef =
-        if cls.useCompanionAsProductMirror then companionPath(mirroredType, span)
+        if cls.useCompanionAsProductMirror then companionPath(pre, cls, span)
         else if defn.isTupleClass(cls) then newTupleMirror(typeElems.size) // TODO: cls == defn.PairClass when > 22
         else anonymousMirror(monoType, MirrorImpl.OfProduct(pre), span)
       withNoErrors(mirrorRef.cast(mirrorType).withSpan(span))
@@ -435,8 +456,8 @@ class Synthesizer(typer: Typer)(using @constructorOnly c: Context):
     MirrorSource.reduce(mirroredType) match
       case Right(msrc) => msrc match
         case MirrorSource.Singleton(_, tref) =>
-          val singleton = tref.termSymbol // prefer alias name over the orignal name
-          val singletonPath = pathFor(tref).withSpan(span)
+          val singleton = tref.termSymbol // prefer alias name over the original name
+          val singletonPath = tpd.singleton(tref).withSpan(span)
           if tref.classSymbol.is(Scala2x) then // could be Scala 3 alias of Scala 2 case object.
             val mirrorType = formal.constrained_& {
               mirrorCore(defn.Mirror_SingletonProxyClass, mirroredType, mirroredType, singleton.name)
@@ -516,7 +537,7 @@ class Synthesizer(typer: Typer)(using @constructorOnly c: Context):
           else
             refineAtPrefix(childPre, childClass, childClass.primaryConstructor.info) match
               case info: PolyType =>
-                // Compute the the full child type by solving the subtype constraint
+                // Compute the full child type by solving the subtype constraint
                 // `C[X1, ..., Xn] <: P`, where
                 //
                 //   - P is the current `mirroredType`
@@ -533,7 +554,7 @@ class Synthesizer(typer: Typer)(using @constructorOnly c: Context):
                   val tparams = poly.paramRefs
                   val variances = childClass.typeParams.map(_.paramVarianceSign)
                   val instanceTypes = tparams.lazyZip(variances).map((tparam, variance) =>
-                    TypeComparer.instanceType(tparam, fromBelow = variance < 0, widenUnions = true)
+                    TypeComparer.instanceType(tparam, fromBelow = variance < 0, Widen.Unions)
                   )
                   val instanceType = resType.substParams(poly, instanceTypes)
                   // this is broken in tests/run/i13332intersection.scala,
@@ -569,7 +590,7 @@ class Synthesizer(typer: Typer)(using @constructorOnly c: Context):
             .refinedWith(tpnme.MirroredElemLabels, TypeAlias(labels))
         }
       val mirrorRef =
-        if cls.useCompanionAsSumMirror then companionPath(mirroredType, span)
+        if cls.useCompanionAsSumMirror then companionPath(pre, cls, span)
         else anonymousMirror(monoType, MirrorImpl.OfSum(childPres), span)
       withNoErrors(mirrorRef.cast(mirrorType))
     else if acceptableMsg.nonEmpty then
@@ -669,7 +690,7 @@ class Synthesizer(typer: Typer)(using @constructorOnly c: Context):
 
     def canManifest(tp: Manifestable, topLevel: Boolean) =
       val sym = tp.typeSymbol
-      !sym.isAbstractType
+      !sym.isAbstractOrParamType
       && hasStableErasure(tp)
       && !(topLevel && defn.isBottomClassAfterErasure(sym))
 
@@ -735,6 +756,8 @@ class Synthesizer(typer: Typer)(using @constructorOnly c: Context):
     defn.MirrorClass          -> synthesizedMirror,
     defn.ManifestClass        -> synthesizedManifest,
     defn.OptManifestClass     -> synthesizedOptManifest,
+    defn.SingletonClass       -> synthesizedSingleton,
+    defn.PreciseClass         -> synthesizedPrecise,
   )
 
   def tryAll(formal: Type, span: Span)(using Context): TreeWithErrors =

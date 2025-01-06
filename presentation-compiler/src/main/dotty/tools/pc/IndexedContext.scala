@@ -13,7 +13,7 @@ import dotty.tools.dotc.core.Types.*
 import dotty.tools.dotc.interactive.Interactive
 import dotty.tools.dotc.typer.ImportInfo
 import dotty.tools.pc.IndexedContext.Result
-import dotty.tools.pc.utils.MtagsEnrichments.*
+import dotty.tools.pc.utils.InteractiveEnrichments.*
 
 sealed trait IndexedContext:
   given ctx: Context
@@ -36,8 +36,8 @@ sealed trait IndexedContext:
             Result.InScope
       // when all the conflicting symbols came from an old version of the file
       case Some(symbols) if symbols.nonEmpty && symbols.forall(_.isStale) => Result.Missing
-      case Some(_) => Result.Conflict
-      case None => Result.Missing
+      case Some(symbols) if symbols.exists(rename(_).isEmpty) => Result.Conflict
+      case _ => Result.Missing
   end lookupSym
 
   /**
@@ -75,7 +75,7 @@ sealed trait IndexedContext:
     )
 
   private def isTypeAliasOf(alias: Symbol, queriedSym: Symbol): Boolean =
-    alias.isAliasType && alias.info.metalsDealias.typeSymbol  == queriedSym
+    alias.isAliasType && alias.info.deepDealias.typeSymbol  == queriedSym
 
   final def isEmpty: Boolean = this match
     case IndexedContext.Empty => true

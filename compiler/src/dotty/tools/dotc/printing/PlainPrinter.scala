@@ -15,7 +15,7 @@ import util.SourcePosition
 import scala.util.control.NonFatal
 import scala.annotation.switch
 import config.{Config, Feature}
-import cc.{CapturingType, RetainingType, CaptureSet, ReachCapability, MaybeCapability, isBoxed, levelOwner, retainedElems, isRetainsLike}
+import cc.{CapturingType, RetainingType, CaptureSet, ReachCapability, MaybeCapability, isBoxed, retainedElems, isRetainsLike}
 
 class PlainPrinter(_ctx: Context) extends Printer {
 
@@ -69,7 +69,8 @@ class PlainPrinter(_ctx: Context) extends Printer {
           homogenize(tp.ref)
         case tp @ AppliedType(tycon, args) =>
           if (defn.isCompiletimeAppliedType(tycon.typeSymbol)) tp.tryCompiletimeConstantFold
-          else tycon.dealias.appliedTo(args)
+          else if !tycon.typeSymbol.isOpaqueAlias then tycon.dealias.appliedTo(args)
+          else tp
         case tp: NamedType =>
           tp.reduceProjection
         case _ =>
@@ -112,7 +113,7 @@ class PlainPrinter(_ctx: Context) extends Printer {
   protected def refinementNameString(tp: RefinedType): String = nameString(tp.refinedName)
 
   /** String representation of a refinement */
-  protected def toTextRefinement(rt: RefinedType): Text =
+  def toTextRefinement(rt: RefinedType): Text =
     val keyword = rt.refinedInfo match {
       case _: ExprType | _: MethodOrPoly => "def "
       case _: TypeBounds => "type "
@@ -121,16 +122,17 @@ class PlainPrinter(_ctx: Context) extends Printer {
     }
     (keyword ~ refinementNameString(rt) ~ toTextRHS(rt.refinedInfo)).close
 
-  protected def argText(arg: Type, isErased: Boolean = false): Text = keywordText("erased ").provided(isErased) ~ (homogenizeArg(arg) match {
-    case arg: TypeBounds => "?" ~ toText(arg)
-    case arg => toText(arg)
-  })
+  protected def argText(arg: Type, isErased: Boolean = false): Text =
+    keywordText("erased ").provided(isErased)
+    ~ homogenizeArg(arg).match
+        case arg: TypeBounds => "?" ~ toText(arg)
+        case arg => toText(arg)
 
   /** Pretty-print comma-separated type arguments for a constructor to be inserted among parentheses or brackets
     * (hence with `GlobalPrec` precedence).
     */
   protected def argsText(args: List[Type]): Text =
-    atPrec(GlobalPrec) { Text(args.map(arg => argText(arg) ), ", ") }
+    atPrec(GlobalPrec) { Text(args.map(argText(_)), ", ") }
 
   /** The longest sequence of refinement types, starting at given type
    *  and following parents.
@@ -163,6 +165,8 @@ class PlainPrinter(_ctx: Context) extends Printer {
   private def toTextRetainedElem[T <: Untyped](ref: Tree[T]): Text = ref match
     case ref: RefTree[?] if ref.typeOpt.exists =>
       toTextCaptureRef(ref.typeOpt)
+    case TypeApply(fn, arg :: Nil) if fn.symbol == defn.Caps_capsOf =>
+      toTextRetainedElem(arg)
     case _ =>
       toText(ref)
 
@@ -249,7 +253,7 @@ class PlainPrinter(_ctx: Context) extends Printer {
           toTextCapturing(parent, refsText, "") ~ Str("R").provided(printDebug)
         else toText(parent)
       case tp: PreviousErrorType if ctx.settings.XprintTypes.value =>
-        "<error>" // do not print previously reported error message because they may try to print this error type again recuresevely
+        "<error>" // do not print previously reported error message because they may try to print this error type again recursively
       case tp: ErrorType =>
         s"<error ${tp.msg.message}>"
       case tp: WildcardType =>
@@ -294,6 +298,8 @@ class PlainPrinter(_ctx: Context) extends Printer {
             && !printDebug
         then atPrec(GlobalPrec)( Str("into ") ~ toText(tpe) )
         else toTextLocal(tpe) ~ " " ~ toText(annot)
+      case FlexibleType(_, tpe) =>
+        "(" ~ toText(tpe) ~ ")?"
       case tp: TypeVar =>
         def toTextCaret(tp: Type) = if printDebug then toTextLocal(tp) ~ Str("^") else toText(tp)
         if (tp.isInstantiated)
@@ -410,9 +416,10 @@ class PlainPrinter(_ctx: Context) extends Printer {
     homogenize(tp) match
       case tp: TermRef if tp.symbol == defn.captureRoot => Str("cap")
       case tp: SingletonType => toTextRef(tp)
-      case ReachCapability(tp1) => toTextRef(tp1) ~ "*"
-      case MaybeCapability(tp1) => toTextRef(tp1) ~ "?"
-      case _ => toText(tp)
+      case tp: (TypeRef | TypeParamRef) => toText(tp) ~ "^"
+      case ReachCapability(tp1) => toTextCaptureRef(tp1) ~ "*"
+      case MaybeCapability(tp1) => toTextCaptureRef(tp1) ~ "?"
+      case tp => toText(tp)
 
   protected def isOmittablePrefix(sym: Symbol): Boolean =
     defn.unqualifiedOwnerTypes.exists(_.symbol == sym) || isEmptyPrefix(sym)
@@ -430,11 +437,11 @@ class PlainPrinter(_ctx: Context) extends Printer {
     sym.isEffectiveRoot || sym.isAnonymousClass || sym.name.isReplWrapperName
 
   /** String representation of a definition's type following its name,
-   *  if symbol is completed, "?" otherwise.
+   *  if symbol is completed, ": ?" otherwise.
    */
   protected def toTextRHS(optType: Option[Type]): Text = optType match {
     case Some(tp) => toTextRHS(tp)
-    case None => "?"
+    case None => ": ?"
   }
 
   protected def decomposeLambdas(bounds: TypeBounds): (Text, TypeBounds) =

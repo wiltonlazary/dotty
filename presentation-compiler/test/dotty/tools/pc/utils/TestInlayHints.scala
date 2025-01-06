@@ -3,8 +3,7 @@ package dotty.tools.pc.utils
 import scala.collection.mutable.ListBuffer
 
 import scala.meta.internal.jdk.CollectionConverters._
-import dotty.tools.pc.utils.MtagsEnrichments.*
-import dotty.tools.pc.utils.TextEdits
+import dotty.tools.pc.utils.InteractiveEnrichments.*
 
 import org.eclipse.lsp4j.InlayHint
 import org.eclipse.lsp4j.TextEdit

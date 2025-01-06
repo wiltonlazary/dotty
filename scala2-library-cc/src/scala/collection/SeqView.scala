@@ -16,7 +16,6 @@ package collection
 import scala.annotation.nowarn
 import language.experimental.captureChecking
 import caps.unsafe.unsafeAssumePure
-import scala.annotation.unchecked.uncheckedCaptures
 
 /** !!! Scala 2 difference: Need intermediate trait SeqViewOps to collect the
  *  necessary functionality over which SeqViews are defined, and at the same
@@ -25,7 +24,6 @@ import scala.annotation.unchecked.uncheckedCaptures
  *  mapping a SeqView with an impure function gives an impure view).
  */
 trait SeqViewOps[+A, +CC[_], +C] extends Any with IterableOps[A, CC, C] {
-  self: SeqViewOps[A, CC, C]^ =>
 
   def length: Int
   def apply(x: Int): A
@@ -65,13 +63,16 @@ trait SeqViewOps[+A, +CC[_], +C] extends Any with IterableOps[A, CC, C] {
   def distinctBy[B](f: A -> B): C^{this} =
     assert(false, "This is a placeholder implementation in the capture checked Scala 2 library.")
     ???
+
+  // The following methods are copied from [[SeqOps]].
+  @`inline` def +: [B >: A](elem: B): CC[B]^{this} = prepended(elem)
+  @`inline` def :+ [B >: A](elem: B): CC[B]^{this} = appended(elem)
   // -------------------
 
   def reverseIterator: Iterator[A]^{this} = reversed.iterator
 }
 
 trait SeqView[+A] extends SeqViewOps[A, View, View[A]] with View[A] {
-  self: SeqView[A]^ =>
 
   override def view: SeqView[A]^{this} = this
 
@@ -182,11 +183,13 @@ object SeqView {
   }
 
   @SerialVersionUID(3L)
-  class Sorted[A, B >: A] private (private[this] var underlying: SomeSeqOps[A]^,
+  class Sorted[A, B >: A] private (underlying: SomeSeqOps[A]^,
                                    private[this] val len: Int,
                                    ord: Ordering[B])
     extends SeqView[A] {
     outer: Sorted[A, B]^ =>
+
+    private var myUnderlying: SomeSeqOps[A]^{underlying} = underlying
 
     // force evaluation immediately by calling `length` so infinite collections
     // hang on `sorted`/`sortWith`/`sortBy` rather than on arbitrary method calls
@@ -217,10 +220,10 @@ object SeqView {
       val res = {
         val len = this.len
         if (len == 0) Nil
-        else if (len == 1) List(underlying.head)
+        else if (len == 1) List(myUnderlying.head)
         else {
           val arr = new Array[Any](len) // Array[Any] =:= Array[AnyRef]
-          underlying.copyToArray(arr)
+          myUnderlying.copyToArray(arr)
           java.util.Arrays.sort(arr.asInstanceOf[Array[AnyRef]], ord.asInstanceOf[Ordering[AnyRef]])
           // casting the Array[AnyRef] to Array[A] and creating an ArraySeq from it
           // is safe because:
@@ -234,12 +237,12 @@ object SeqView {
         }
       }
       evaluated = true
-      underlying = null
+      myUnderlying = null
       res
     }
 
     private[this] def elems: SomeSeqOps[A]^{this} = {
-      val orig = underlying
+      val orig = myUnderlying
       if (evaluated) _sorted else orig
     }
 

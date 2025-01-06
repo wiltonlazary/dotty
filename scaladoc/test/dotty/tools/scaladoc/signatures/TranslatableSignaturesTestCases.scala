@@ -120,3 +120,9 @@ class MatchTypeTuple extends SignatureTest("matchTypeTuple", SignatureTest.all)
 class InfixTypes extends SignatureTest("infixTypes", SignatureTest.all)
 
 class ExtendsCall extends SignatureTest("extendsCall", SignatureTest.all)
+
+class RefinedFunctionTypes extends SignatureTest("refinedFunctionTypes", SignatureTest.all)
+
+class RightAssocExtension extends SignatureTest("rightAssocExtension", SignatureTest.all)
+
+class NamedTuples extends SignatureTest("namedTuples", SignatureTest.all)

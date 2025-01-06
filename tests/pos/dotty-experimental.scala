@@ -1,8 +1,8 @@
-//> using options -Yno-experimental
+
 
 import language.experimental.captureChecking
 object test {
 
-  val x: caps.Cap = caps.cap
+  val x: caps.Capability = caps.cap
 
 }

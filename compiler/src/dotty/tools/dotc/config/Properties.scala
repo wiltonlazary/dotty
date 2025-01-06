@@ -10,7 +10,7 @@ import java.io.IOException
 import java.util.jar.Attributes.{ Name => AttributeName }
 import java.nio.charset.StandardCharsets
 
-/** Loads `library.properties` from the jar. */
+/** Loads `compiler.properties` from the jar. */
 object Properties extends PropertiesTrait {
   protected def propCategory: String = "compiler"
   protected def pickJarBasedOn: Class[PropertiesTrait] = classOf[PropertiesTrait]
@@ -83,12 +83,6 @@ trait PropertiesTrait {
    *  or `"version (unknown)"` if it cannot be determined.
    */
   val versionString: String = "version " + simpleVersionString
-
-  /** Whether the current version of compiler is experimental
-   *
-   *  Snapshot, nightly releases and non-bootstrapped compiler are experimental.
-   */
-  val unstableExperimentalEnabled: Boolean = versionString.contains("SNAPSHOT") || versionString.contains("NIGHTLY") || versionString.contains("nonbootstrapped")
 
   /** Whether the current version of compiler supports research plugins. */
   val researchPluginEnabled: Boolean = versionString.contains("SNAPSHOT") || versionString.contains("NIGHTLY") || versionString.contains("nonbootstrapped")

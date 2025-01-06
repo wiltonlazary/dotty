@@ -49,8 +49,8 @@ Scala](https://www.jetbrains.com/help/idea/discover-intellij-idea-for-scala.html
 Start by cloning the repository:
 
 ```bash
-$ git clone https://github.com/lampepfl/dotty.git
-$ cd dotty
+$ git clone https://github.com/scala/scala3.git
+$ cd scala3
 ```
 
 Dotty provides a standard sbt build: compiling, running and starting a repl can
@@ -80,6 +80,12 @@ $ scalac tests/pos/HelloWorld.scala
 # Run it with the proper classpath
 $ scala HelloWorld
 ```
+
+Note that the `scalac` and `scala` scripts have slow roundtrip times when working on the compiler codebase: whenever
+any source file changes they invoke `sbt dist/pack` first.
+
+As an alternative, run the `buildQuick` task in sbt. It builds the compiler and writes its classpath to the `bin/.cp`
+file, which enables  the `scalacQ` and `scalaQ` scripts in the `bin/` folder.
 
 ## Starting a REPL
 
@@ -140,6 +146,6 @@ The main development discussion channels are:
 [java11]: https://www.oracle.com/java/technologies/javase-jdk11-downloads.html
 [adopt]: https://adoptopenjdk.net/
 [compat]: https://docs.scala-lang.org/overviews/jdk-compatibility/overview.html
-[scala-cla]: https://www.lightbend.com/contribute/cla/scala
+[scala-cla]: https://contribute.akka.io/cla/scala
 [dotty-issue]: https://github.com/scala/scala3/issues
 [dotty-discussion]: https://github.com/scala/scala3/discussions

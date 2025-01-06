@@ -1,3 +1,5 @@
+
+
 import annotation.retains
 class C
 def f(x: C @retains(caps.cap), y: C): () -> C =

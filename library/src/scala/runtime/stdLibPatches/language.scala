@@ -64,9 +64,10 @@ object language:
     /** Adds support for clause interleaving:
       * Methods can now have as many type clauses as they like, this allows to have type bounds depend on terms: `def f(x: Int)[A <: x.type]: A`
       *
-      * @see [[http://dotty.epfl.ch/docs/reference/other-new-features/explicit-nulls.html]]
+      * @see [[https://github.com/scala/improvement-proposals/blob/main/content/clause-interleaving.md]]
       */
     @compileTimeOnly("`clauseInterleaving` can only be used at compile time in import statements")
+    @deprecated("`clauseInterleaving` is now standard, no language import is needed", since = "3.6")
     object clauseInterleaving
 
     /** Experimental support for pure function type syntax
@@ -84,12 +85,31 @@ object language:
     object captureChecking
 
     /** Experimental support for automatic conversions of arguments, without requiring
-     *  a langauge import `import scala.language.implicitConversions`.
+     *  a language import `import scala.language.implicitConversions`.
      *
      *  @see [[https://dotty.epfl.ch/docs/reference/experimental/into-modifier]]
      */
     @compileTimeOnly("`into` can only be used at compile time in import statements")
     object into
+
+    /** Experimental support for named tuples.
+     *
+     *  @see [[https://dotty.epfl.ch/docs/reference/experimental/named-tuples]]
+     */
+    @compileTimeOnly("`namedTuples` can only be used at compile time in import statements")
+    object namedTuples
+
+    /** Experimental support for new features for better modularity, including
+     *   - better tracking of dependencies through classes
+     *   - better usability of context bounds
+     *   - better syntax and conventions for type classes
+     *   - ability to merge exported types in intersections
+     *
+     *  @see [[https://dotty.epfl.ch/docs/reference/experimental/modularity]]
+     *  @see [[https://dotty.epfl.ch/docs/reference/experimental/typeclasses]]
+     */
+    @compileTimeOnly("`modularity` can only be used at compile time in import statements")
+    object modularity
 
     /** Was needed to add support for relaxed imports of extension methods.
       * The language import is no longer needed as this is now a standard feature since SIP was accepted.
@@ -98,6 +118,28 @@ object language:
     @compileTimeOnly("`relaxedExtensionImports` can only be used at compile time in import statements")
     @deprecated("The experimental.relaxedExtensionImports language import is no longer needed since the feature is now standard", since = "3.4")
     object relaxedExtensionImports
+
+    /** Enhance match type extractors to follow aliases and singletons.
+     *
+     *  @see [[https://github.com/scala/improvement-proposals/pull/84]]
+     */
+    @compileTimeOnly("`betterMatchTypeExtractors` can only be used at compile time in import statements")
+    @deprecated("The experimental.betterMatchTypeExtractors language import is no longer needed since the feature is now standard. It now has no effect, including when setting an older source version.", since = "3.6")
+    object betterMatchTypeExtractors
+
+    /** Experimental support for quote pattern matching with polymorphic functions
+     *
+     *  @see [[https://dotty.epfl.ch/docs/reference/experimental/quoted-patterns-with-polymorphic-functions]]
+     */
+    @compileTimeOnly("`quotedPatternsWithPolymorphicFunctions` can only be used at compile time in import statements")
+    object quotedPatternsWithPolymorphicFunctions
+
+    /** Experimental support for improvements in `for` comprehensions
+     *
+     * @see [[https://github.com/scala/improvement-proposals/pull/79]]
+     */
+    @compileTimeOnly("`betterFors` can only be used at compile time in import statements")
+    object betterFors
   end experimental
 
   /** The deprecated object contains features that are no longer officially suypported in Scala.
@@ -259,6 +301,35 @@ object language:
     */
   @compileTimeOnly("`3.5` can only be used at compile time in import statements")
   object `3.5`
+
+  /** Set source version to 3.6-migration.
+    *
+    * @see [[https://docs.scala-lang.org/scala3/guides/migration/compatibility-intro.html]]
+    */
+  @compileTimeOnly("`3.6-migration` can only be used at compile time in import statements")
+  object `3.6-migration`
+
+  /** Set source version to 3.6
+    *
+    * @see [[https://docs.scala-lang.org/scala3/guides/migration/compatibility-intro.html]]
+    */
+  @compileTimeOnly("`3.6` can only be used at compile time in import statements")
+  object `3.6`
+
+  /** Set source version to 3.7-migration.
+    *
+    * @see [[https://docs.scala-lang.org/scala3/guides/migration/compatibility-intro.html]]
+    */
+  @compileTimeOnly("`3.7-migration` can only be used at compile time in import statements")
+  object `3.7-migration`
+
+  /** Set source version to 3.7
+    *
+    * @see [[https://docs.scala-lang.org/scala3/guides/migration/compatibility-intro.html]]
+    */
+  @compileTimeOnly("`3.7` can only be used at compile time in import statements")
+  object `3.7`
+
 
   // !!! Keep in sync with dotty.tools.dotc.config.SourceVersion !!!
   // Also add tests in `tests/pos/source-import-3-x.scala` and `tests/pos/source-import-3-x-migration.scala`

@@ -267,7 +267,9 @@ class TypeApplications(val self: Type) extends AnyVal {
    */
   def hkResult(using Context): Type = self.dealias match {
     case self: TypeRef =>
-      if (self.symbol == defn.AnyKindClass) self else self.info.hkResult
+      if self.symbol == defn.AnyKindClass then self
+      else if self.symbol.isClass then NoType // avoid forcing symbol if it's a class, not an alias to a HK type lambda
+      else self.info.hkResult
     case self: AppliedType =>
       if (self.tycon.typeSymbol.isClass) NoType else self.superType.hkResult
     case self: HKTypeLambda => self.resultType
@@ -461,7 +463,7 @@ class TypeApplications(val self: Type) extends AnyVal {
    */
   final def toBounds(using Context): TypeBounds = self match {
     case self: TypeBounds => self // this can happen for wildcard args
-    case _ => if (self.isMatch) MatchAlias(self) else TypeAlias(self)
+    case _ => AliasingBounds(self)
   }
 
   /** Translate a type of the form From[T] to either To[T] or To[? <: T] (if `wildcardArg` is set). Keep other types as they are.
@@ -541,6 +543,7 @@ class TypeApplications(val self: Type) extends AnyVal {
    */
   final def argInfos(using Context): List[Type] = self.stripped match
     case AppliedType(tycon, args) => args
+    case tp: FlexibleType => tp.underlying.argInfos
     case _ => Nil
 
   /** If this is an encoding of a function type, return its arguments, otherwise return Nil.

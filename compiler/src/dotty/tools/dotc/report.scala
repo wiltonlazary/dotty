@@ -23,8 +23,8 @@ object report:
   private def issueWarning(warning: Warning)(using Context): Unit =
     ctx.reporter.report(warning)
 
-  def deprecationWarning(msg: Message, pos: SrcPos)(using Context): Unit =
-    issueWarning(new DeprecationWarning(msg, pos.sourcePos))
+  def deprecationWarning(msg: Message, pos: SrcPos, origin: String = "")(using Context): Unit =
+    issueWarning(new DeprecationWarning(msg, pos.sourcePos, origin))
 
   def migrationWarning(msg: Message, pos: SrcPos)(using Context): Unit =
     issueWarning(new MigrationWarning(msg, pos.sourcePos))
@@ -81,9 +81,25 @@ object report:
     if ctx.settings.YdebugError.value then Thread.dumpStack()
     if ctx.settings.YdebugTypeError.value then ex.printStackTrace()
 
+  def bestEffortError(ex: Throwable, msg: String)(using Context): Unit =
+    val stackTrace =
+      Option(ex.getStackTrace()).map { st =>
+        if st.nn.isEmpty then ""
+        else s"Stack trace: \n ${st.nn.mkString("\n ")}".stripMargin
+      }.getOrElse("")
+    // Build tools and dotty's test framework may check precisely for
+    // "Unsuccessful best-effort compilation." error text.
+    val fullMsg =
+      em"""Unsuccessful best-effort compilation.
+          |${msg}
+          |Cause:
+          | ${ex.toString.replace("\n", "\n ")}
+          |${stackTrace}"""
+    ctx.reporter.report(new Error(fullMsg, NoSourcePosition))
+
   def errorOrMigrationWarning(msg: Message, pos: SrcPos, migrationVersion: MigrationVersion)(using Context): Unit =
     if sourceVersion.isAtLeast(migrationVersion.errorFrom) then
-      if !sourceVersion.isMigrating then error(msg, pos)
+      if sourceVersion != migrationVersion.errorFrom.prevMigrating then error(msg, pos)
       else if ctx.settings.rewrite.value.isEmpty then migrationWarning(msg, pos)
     else if sourceVersion.isAtLeast(migrationVersion.warnFrom) then warning(msg, pos)
 
@@ -130,7 +146,7 @@ object report:
 
   // Should only be called from Run#enrichErrorMessage.
   def enrichErrorMessage(errorMessage: String)(using Context): String =
-    if ctx.settings.YnoEnrichErrorMessages.value then errorMessage
+    if ctx.settings.XnoEnrichErrorMessages.value then errorMessage
     else try enrichErrorMessage1(errorMessage)
     catch case _: Throwable => errorMessage // don't introduce new errors trying to report errors, so swallow exceptions
 
@@ -149,13 +165,23 @@ object report:
       "compiler version"   -> dotty.tools.dotc.config.Properties.versionString,
       "settings"           -> settings.map(showSetting).mkString(" "),
     ))
+    val fileAReportMsg =
+      if ctx.phase.isInstanceOf[plugins.PluginPhase]
+      then
+        s"""|  An unhandled exception was thrown in the compiler plugin named "${ctx.phase.megaPhase}".
+            |  Please report the issue to the plugin's maintainers.
+            |  For non-enriched exceptions, compile with -Xno-enrich-error-messages.
+            |""".stripMargin
+      else
+        s"""|  An unhandled exception was thrown in the compiler.
+            |  Please file a crash report here:
+            |  https://github.com/scala/scala3/issues/new/choose
+            |  For non-enriched exceptions, compile with -Xno-enrich-error-messages.
+            |""".stripMargin
     s"""
        |  $errorMessage
        |
-       |  An unhandled exception was thrown in the compiler.
-       |  Please file a crash report here:
-       |  https://github.com/scala/scala3/issues/new/choose
-       |  For non-enriched exceptions, compile with -Yno-enrich-error-messages.
+       |$fileAReportMsg
        |
        |$info1
        |""".stripMargin

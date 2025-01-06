@@ -269,9 +269,9 @@ class HoverTermSuite extends BaseHoverSuite:
         |  } yield x
         |}
         |""".stripMargin,
-      """|Option[Int]
-         |override def headOption: Option[A]
-         |""".stripMargin.hover
+      """|```scala
+         |override def headOption: Option[Int]
+         |```""".stripMargin.hover
     )
 
   @Test def `object` =
@@ -596,6 +596,21 @@ class HoverTermSuite extends BaseHoverSuite:
         |""".stripMargin
     )
 
+  @Test def `i20560`=
+    check(
+      "val re@@s = tests.macros.Macro20560.loadJavaSqlDriver",
+      """```scala
+        |val res: Int
+        |```
+        |""".stripMargin
+    )
+
+  @Test def `i20560-2`=
+    check(
+      "val re@@s = tests.macros.Macro20560.loadJavaSqlInexisting",
+      "", // crashes in the Macro; no type info
+    )
+
   @Test def `import-rename` =
     check(
       """
@@ -653,3 +668,52 @@ class HoverTermSuite extends BaseHoverSuite:
         |```
         |""".stripMargin
     )
+
+  @Test def `dealias-type-members-in-structural-types1`: Unit =
+    check(
+      """object Obj {
+        |  trait A extends Sup { self =>
+        |    type T
+        |    def member : T
+        |  }
+        |  val x: A { type T = Int} = ???
+        |
+        |  <<x.mem@@ber>>
+        |
+        |}""".stripMargin,
+      """def member: Int""".stripMargin.hover
+  )
+
+  @Test def `dealias-type-members-in-structural-types2`: Unit =
+    check(
+      """object Obj:
+        |  trait A extends Sup { self =>
+        |    type T
+        |    def fun(body: A { type T = self.T} => Unit) = ()
+        |  }
+        |  val x: A { type T = Int} = ???
+        |
+        |  x.fun: <<y@@y>> =>
+        |    ()
+        |""".stripMargin,
+      """yy: A{type T = Int}""".stripMargin.hover
+  )
+
+  @Test def `right-assoc-extension`: Unit =
+    check(
+      """
+        |case class Wrap[+T](x: T)
+        |
+        |extension [T](a: T)
+        |  def <<*@@:>>[U <: Tuple](b: Wrap[U]): Wrap[T *: U] = Wrap(a *: b.x)
+        |""".stripMargin,
+      "extension [T](a: T) def *:[U <: Tuple](b: Wrap[U]): Wrap[T *: U]".hover
+    )
+
+  @Test def `dont-ignore-???-in-path`: Unit =
+    check(
+      """object Obj:
+        |  val x = ?@@??
+        |""".stripMargin,
+      """def ???: Nothing""".stripMargin.hover
+  )

@@ -13,13 +13,13 @@ import dotty.tools.dotc.ast.NavigateAST
 import dotty.tools.dotc.ast.tpd.*
 import dotty.tools.dotc.ast.untpd
 import dotty.tools.dotc.core.Contexts.Context
-import dotty.tools.dotc.core.Flags.ModuleClass
+import dotty.tools.dotc.core.Flags.{Exported, ModuleClass}
 import dotty.tools.dotc.core.Symbols.*
 import dotty.tools.dotc.interactive.Interactive
 import dotty.tools.dotc.interactive.InteractiveDriver
 import dotty.tools.dotc.util.SourceFile
 import dotty.tools.dotc.util.SourcePosition
-import dotty.tools.pc.utils.MtagsEnrichments.*
+import dotty.tools.pc.utils.InteractiveEnrichments.*
 
 import org.eclipse.lsp4j.Location
 
@@ -123,18 +123,21 @@ class PcDefinitionProvider(
       case symbols @ (sym :: other) =>
         val isLocal = sym.source == pos.source
         if isLocal then
-          val defs =
-            Interactive.findDefinitions(List(sym), driver, false, false).filter(_.source == sym.source)
-          defs.headOption match
+          val (exportedDefs, otherDefs) =
+            Interactive.findDefinitions(List(sym), driver, false, false)
+              .filter(_.source == sym.source)
+              .partition(_.tree.symbol.is(Exported))
+
+          otherDefs.headOption.orElse(exportedDefs.headOption)  match
             case Some(srcTree) =>
               val pos = srcTree.namePos
-              pos.toLocation match
-                case None => DefinitionResultImpl.empty
-                case Some(loc) =>
+              if pos.exists then
+                  val loc = new Location(params.uri().toString(), pos.toLsp)
                   DefinitionResultImpl(
                     SemanticdbSymbols.symbolName(sym),
-                    List(loc).asJava
+                    List(loc).asJava,
                   )
+              else DefinitionResultImpl.empty
             case None =>
               DefinitionResultImpl.empty
         else

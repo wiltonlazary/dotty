@@ -1,3 +1,5 @@
+
+
 trait Cap { def use(): Int; def close(): Unit }
 def mkCap(): Cap^ = ???
 

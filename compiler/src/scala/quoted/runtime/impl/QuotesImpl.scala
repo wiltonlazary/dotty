@@ -43,7 +43,7 @@ class QuotesImpl private (using val ctx: Context) extends Quotes, QuoteUnpickler
   import tpd.*
 
   private val xCheckMacro: Boolean = ctx.settings.XcheckMacros.value
-  private val yDebugMacro: Boolean = ctx.settings.YdebugMacros.value
+  private val yDebugMacro: Boolean = ctx.settings.XdebugMacros.value
 
   extension [T](self: scala.quoted.Expr[T])
     def show: String =
@@ -301,7 +301,7 @@ class QuotesImpl private (using val ctx: Context) extends Quotes, QuoteUnpickler
 
     object DefDef extends DefDefModule:
       def apply(symbol: Symbol, rhsFn: List[List[Tree]] => Option[Term]): DefDef =
-        xCheckMacroAssert(symbol.isTerm, s"expected a term symbol but received $symbol")
+        xCheckMacroAssert(symbol.isTerm, s"expected a term symbol, but received $symbol")
         xCheckMacroAssert(symbol.flags.is(Flags.Method), "expected a symbol with `Method` flag set")
         withDefaultPos(tpd.DefDef(symbol.asTerm, prefss =>
           xCheckedMacroOwners(xCheckMacroValidExpr(rhsFn(prefss)), symbol).getOrElse(tpd.EmptyTree)
@@ -396,17 +396,22 @@ class QuotesImpl private (using val ctx: Context) extends Quotes, QuoteUnpickler
     end TermTypeTest
 
     object Term extends TermModule:
-      def betaReduce(tree: Term): Option[Term] =
-        tree match
-          case tpd.Block(Nil, expr) =>
-            for e <- betaReduce(expr) yield tpd.cpy.Block(tree)(Nil, e)
-          case tpd.Inlined(_, Nil, expr) =>
-            betaReduce(expr)
-          case _ =>
-            val tree1 = dotc.transform.BetaReduce(tree)
-            if tree1 eq tree then None
-            else Some(tree1.withSpan(tree.span))
-
+       def betaReduce(tree: Term): Option[Term] =
+        val tree1 = new dotty.tools.dotc.ast.tpd.TreeMap {
+          override def transform(tree: Tree)(using Context): Tree = tree match {
+            case tpd.Block(Nil, _) |  tpd.Inlined(_, Nil, _) =>
+              super.transform(tree)
+            case tpd.Apply(sel @ tpd.Select(expr, nme), args) =>
+              val tree1 = cpy.Apply(tree)(cpy.Select(sel)(transform(expr), nme), args)
+              dotc.transform.BetaReduce(tree1).withSpan(tree.span)
+            case tpd.Apply(ta @ tpd.TypeApply(sel @ tpd.Select(expr: Apply, nme), tpts), args) =>
+              val tree1 = cpy.Apply(tree)(cpy.TypeApply(ta)(cpy.Select(sel)(transform(expr), nme), tpts), args)
+              dotc.transform.BetaReduce(tree1).withSpan(tree.span)
+            case _ =>
+              dotc.transform.BetaReduce(tree).withSpan(tree.span)
+          }
+        }.transform(tree)
+        if tree1 == tree then None else Some(tree1)
     end Term
 
     given TermMethods: TermMethods with
@@ -467,7 +472,7 @@ class QuotesImpl private (using val ctx: Context) extends Quotes, QuoteUnpickler
       def term(tp: TermRef): Ref =
         withDefaultPos(tpd.ref(tp).asInstanceOf[tpd.RefTree])
       def apply(sym: Symbol): Ref =
-        assert(sym.isTerm)
+        assert(sym.isTerm, s"expected a term symbol, but received $sym")
         val refTree = tpd.ref(sym) match
           case t @ tpd.This(ident) => // not a RefTree, so we need to work around this - issue #19732
             // ident in `This` can be a TypeIdent of sym, so we manually prepare the ref here,
@@ -1123,7 +1128,7 @@ class QuotesImpl private (using val ctx: Context) extends Quotes, QuoteUnpickler
       def of[T <: AnyKind](using tp: scala.quoted.Type[T]): TypeTree =
         tp.asInstanceOf[TypeImpl].typeTree
       def ref(sym: Symbol): TypeTree =
-        assert(sym.isType, "Expected a type symbol, but got " + sym)
+        assert(sym.isType, s"Expected a type symbol, but got $sym")
         tpd.ref(sym)
     end TypeTree
 
@@ -1157,7 +1162,7 @@ class QuotesImpl private (using val ctx: Context) extends Quotes, QuoteUnpickler
 
     object TypeIdent extends TypeIdentModule:
       def apply(sym: Symbol): TypeTree =
-        assert(sym.isType)
+        assert(sym.isType, s"Expected a type symbol, but got $sym")
         withDefaultPos(tpd.ref(sym).asInstanceOf[tpd.TypeTree])
       def copy(original: Tree)(name: String): TypeIdent =
         tpd.cpy.Ident(original)(name.toTypeName)
@@ -1806,7 +1811,10 @@ class QuotesImpl private (using val ctx: Context) extends Quotes, QuoteUnpickler
         def =:=(that: TypeRepr): Boolean = self =:= that
         def <:<(that: TypeRepr): Boolean = self <:< that
         def widen: TypeRepr = self.widen
-        def widenTermRefByName: TypeRepr = self.widenTermRefExpr
+        def widenTermRefByName: TypeRepr =
+          self.widenTermRefExpr match
+            case dotc.core.Types.ClassInfo(prefix, sym, _, _, _) => prefix.select(sym)
+            case other => other
         def widenByName: TypeRepr = self.widenExpr
         def dealias: TypeRepr = self.dealias
         def dealiasKeepOpaques: TypeRepr = self.dealiasKeepOpaques
@@ -2210,6 +2218,12 @@ class QuotesImpl private (using val ctx: Context) extends Quotes, QuoteUnpickler
     object MethodType extends MethodTypeModule:
       def apply(paramNames: List[String])(paramInfosExp: MethodType => List[TypeRepr], resultTypeExp: MethodType => TypeRepr): MethodType =
         Types.MethodType(paramNames.map(_.toTermName))(paramInfosExp, resultTypeExp)
+      def apply(kind: MethodTypeKind)(paramNames: List[String])(paramInfosExp: MethodType => List[TypeRepr], resultTypeExp: MethodType => TypeRepr): MethodType =
+        val companion = kind match
+          case MethodTypeKind.Contextual => Types.ContextualMethodType
+          case MethodTypeKind.Implicit => Types.ImplicitMethodType
+          case MethodTypeKind.Plain => Types.MethodType
+        companion.apply(paramNames.map(_.toTermName))(paramInfosExp, resultTypeExp)
       def unapply(x: MethodType): (List[String], List[TypeRepr], TypeRepr) =
         (x.paramNames.map(_.toString), x.paramTypes, x.resType)
     end MethodType
@@ -2218,6 +2232,12 @@ class QuotesImpl private (using val ctx: Context) extends Quotes, QuoteUnpickler
       extension (self: MethodType)
         def isErased: Boolean = false
         def isImplicit: Boolean = self.isImplicitMethod
+        def isContextual: Boolean = self.isContextualMethod
+        def methodTypeKind: MethodTypeKind =
+          self.companion match
+            case Types.ContextualMethodType => MethodTypeKind.Contextual
+            case Types.ImplicitMethodType => MethodTypeKind.Implicit
+            case _ => MethodTypeKind.Plain
         def param(idx: Int): TypeRepr = self.newParamRef(idx)
 
         def erasedParams: List[Boolean] = self.erasedParams
@@ -2325,6 +2345,27 @@ class QuotesImpl private (using val ctx: Context) extends Quotes, QuoteUnpickler
     object NoPrefix extends NoPrefixModule:
       def unapply(x: NoPrefix): true = true
     end NoPrefix
+
+    type FlexibleType = dotc.core.Types.FlexibleType
+
+    object FlexibleTypeTypeTest extends TypeTest[TypeRepr, FlexibleType]:
+      def unapply(x: TypeRepr): Option[FlexibleType & x.type] = x match
+        case x: (Types.FlexibleType & x.type) => Some(x)
+        case _ => None
+    end FlexibleTypeTypeTest
+
+    object FlexibleType extends FlexibleTypeModule:
+      def apply(tp: TypeRepr): FlexibleType = Types.FlexibleType(tp)
+      def unapply(x: FlexibleType): Some[TypeRepr] = Some(x.hi)
+    end FlexibleType
+
+    given FlexibleTypeMethods: FlexibleTypeMethods with
+      extension (self: FlexibleType)
+        def underlying: TypeRepr = self.hi
+        def lo: TypeRepr = self.lo
+        def hi: TypeRepr = self.hi
+      end extension
+    end FlexibleTypeMethods
 
     type Constant = dotc.core.Constants.Constant
 
@@ -2608,6 +2649,16 @@ class QuotesImpl private (using val ctx: Context) extends Quotes, QuoteUnpickler
       def newBind(owner: Symbol, name: String, flags: Flags, tpe: TypeRepr): Symbol =
         checkValidFlags(flags.toTermFlags, Flags.validBindFlags)
         dotc.core.Symbols.newSymbol(owner, name.toTermName, flags | dotc.core.Flags.Case, tpe)
+
+      def newTypeAlias(owner: Symbol, name: String, flags: Flags, tpe: TypeRepr, privateWithin: Symbol): Symbol =
+        checkValidFlags(flags.toTypeFlags, Flags.validTypeAliasFlags)
+        assert(!tpe.isInstanceOf[Types.TypeBounds], "Passed `tpe` into newTypeAlias should not represent TypeBounds")
+        dotc.core.Symbols.newSymbol(owner, name.toTypeName, flags, dotc.core.Types.TypeAlias(tpe), privateWithin)
+
+      def newBoundedType(owner: Symbol, name: String, flags: Flags, tpe: TypeBounds, privateWithin: Symbol): Symbol =
+        checkValidFlags(flags.toTypeFlags, Flags.validBoundedTypeFlags)
+        dotc.core.Symbols.newSymbol(owner, name.toTypeName, flags | dotc.core.Flags.Deferred, tpe, privateWithin)
+
       def noSymbol: Symbol = dotc.core.Symbols.NoSymbol
 
       private inline def checkValidFlags(inline flags: Flags, inline valid: Flags): Unit =
@@ -2647,9 +2698,10 @@ class QuotesImpl private (using val ctx: Context) extends Quotes, QuoteUnpickler
           if self.exists then
             val symPos = self.sourcePos
             if symPos.exists then Some(symPos)
-            else
+            else if self.source.exists then
               if xCheckMacro then report.warning(s"Missing symbol position (defaulting to position 0): $self\nThis is a compiler bug. Please report it.")
               Some(self.source.atSpan(dotc.util.Spans.Span(0)))
+            else None
           else None
 
         def docstring: Option[String] =
@@ -2682,8 +2734,9 @@ class QuotesImpl private (using val ctx: Context) extends Quotes, QuoteUnpickler
         def isAliasType: Boolean = self.denot.isAliasType
         def isAnonymousClass: Boolean = self.denot.isAnonymousClass
         def isAnonymousFunction: Boolean = self.denot.isAnonymousFunction
-        def isAbstractType: Boolean = self.denot.isAbstractType
+        def isAbstractType: Boolean = self.denot.isAbstractOrParamType
         def isClassConstructor: Boolean = self.denot.isClassConstructor
+        def isSuperAccessor = self.name.is(dotc.core.NameKinds.SuperAccessorName)
         def isType: Boolean = self.isType
         def isTerm: Boolean = self.isTerm
         def isPackageDef: Boolean = self.is(dotc.core.Flags.Package)
@@ -2947,6 +3000,13 @@ class QuotesImpl private (using val ctx: Context) extends Quotes, QuoteUnpickler
 
       // Keep: aligned with Quotes's `newBind` doc
       private[QuotesImpl] def validBindFlags: Flags = Case // Flags that could be allowed: Implicit | Given | Erased
+
+      // Keep: aligned with Quotes's 'newBoundedType' doc
+      private[QuotesImpl] def validBoundedTypeFlags: Flags = Private | Protected | Override | Deferred | Final | Infix | Local
+
+      // Keep: aligned with Quotes's `newTypeAlias` doc
+      private[QuotesImpl] def validTypeAliasFlags: Flags = Private | Protected | Override | Final | Infix | Local
+
     end Flags
 
     given FlagsMethods: FlagsMethods with

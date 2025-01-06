@@ -25,33 +25,12 @@ val experimentalDefinitionInLibrary = Set(
   "scala.util.TupledFunction",
   "scala.util.TupledFunction$",
 
-  //// New feature: main annotation generalization
-  // Can be stabilized when language feature is stabilized.
-  // Needs user feedback.
-  // Should argGetter/varargGetter be simplified?
-  // Should we have better support for main annotation macros?
-  "scala.annotation.MainAnnotation",
-  "scala.annotation.MainAnnotation$",
-  "scala.annotation.MainAnnotation$.Info",
-  "scala.annotation.MainAnnotation$.Parameter",
-  "scala.annotation.MainAnnotation$.ParameterAnnotation",
-
-
-  //// New feature: prototype of new version of @main
-  // This will never be stabilized. When it is ready it should replace the old @main annotation (requires scala.annotation.MainAnnotation).
-  // Needs user feedback.
-  "scala.annotation.newMain",
-  "scala.annotation.newMain$",
-  "scala.annotation.newMain$.alias",
-  "scala.annotation.newMain.Help",
-  "scala.annotation.newMain.Help$",
-  "scala.annotation.newMain.Names",
-
   //// New feature: capture checking
   "scala.annotation.capability",
   "scala.annotation.retains",
   "scala.annotation.retainsByName",
   "scala.annotation.retainsCap",
+  "scala.annotation.retainsArg",
   "scala.Pure",
   "scala.caps",
   "scala.caps$",
@@ -72,8 +51,8 @@ val experimentalDefinitionInLibrary = Set(
   "scala.annotation.init$.widen",
   "scala.annotation.init$.region",
 
-   //// New APIs: Quotes
-  // Can be stabilized in 3.4.0 (unsure) or later
+  //// New APIs: Quotes
+  // Can be stabilized in 3.5.0 (unsure) or later
   "scala.quoted.Quotes.reflectModule.CompilationInfoModule.XmacroSettings",
   // Cant be stabilized yet.
   // Need newClass variant that can add constructor parameters.
@@ -84,6 +63,9 @@ val experimentalDefinitionInLibrary = Set(
   "scala.quoted.Quotes.reflectModule.SymbolModule.newModule",
   "scala.quoted.Quotes.reflectModule.SymbolModule.freshName",
   "scala.quoted.Quotes.reflectModule.SymbolMethods.info",
+  // Added for 3.6.0, stabilize after feedback.
+  "scala.quoted.Quotes.reflectModule.SymbolModule.newBoundedType",
+  "scala.quoted.Quotes.reflectModule.SymbolModule.newTypeAlias",
 
   // New feature: functions with erased parameters.
   // Need erasedDefinitions enabled.
@@ -92,11 +74,26 @@ val experimentalDefinitionInLibrary = Set(
   "scala.quoted.Quotes.reflectModule.TermParamClauseMethods.erasedArgs",
   "scala.quoted.Quotes.reflectModule.TermParamClauseMethods.hasErasedArgs",
 
-  // New feature: reverse method on Tuple
-  "scala.Tuple.reverse", // can be stabilized in 3.5
-  "scala.Tuple$.Reverse", // can be stabilized in 3.5
-  "scala.Tuple$.ReverseOnto", // can be stabilized in 3.5
-  "scala.runtime.Tuples$.reverse", // can be stabilized in 3.5
+  // New feature: fromNullable for explicit nulls
+  "scala.Predef$.fromNullable",
+
+  // New feature: named tuples
+  "scala.NamedTuple",
+  "scala.NamedTuple$",
+  "scala.NamedTupleDecomposition",
+  "scala.NamedTupleDecomposition$",
+
+  // New feature: modularity
+  "scala.Precise",
+  "scala.annotation.internal.WitnessNames",
+  "scala.runtime.stdLibPatches.Predef$.is",
+
+  // New feature: functions with erased parameters.
+  // Need quotedPatternsWithPolymorphicFunctions enabled.
+  "scala.quoted.runtime.Patterns$.higherOrderHoleWithTypes",
+
+  // New feature: SIP 57 - runtimeChecked replacement of @unchecked
+  "scala.Predef$.runtimeChecked", "scala.annotation.internal.RuntimeChecked"
 )
 
 

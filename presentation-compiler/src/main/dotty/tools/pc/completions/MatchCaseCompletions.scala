@@ -15,7 +15,6 @@ import dotty.tools.toOption
 import dotty.tools.dotc.ast.tpd.*
 import dotty.tools.dotc.core.Constants.Constant
 import dotty.tools.dotc.core.Contexts.Context
-import dotty.tools.dotc.core.Definitions
 import dotty.tools.dotc.core.Denotations.Denotation
 import dotty.tools.dotc.core.Flags
 import dotty.tools.dotc.core.Flags.*
@@ -28,13 +27,15 @@ import dotty.tools.dotc.core.Types.NoType
 import dotty.tools.dotc.core.Types.OrType
 import dotty.tools.dotc.core.Types.Type
 import dotty.tools.dotc.core.Types.TypeRef
+import dotty.tools.dotc.core.Types.AppliedType
+import dotty.tools.dotc.typer.Applications.UnapplyArgs
 import dotty.tools.dotc.util.SourcePosition
 import dotty.tools.pc.AutoImports.AutoImportsGenerator
 import dotty.tools.pc.AutoImports.SymbolImport
 import dotty.tools.pc.MetalsInteractive.*
 import dotty.tools.pc.printer.ShortenedTypePrinter
 import dotty.tools.pc.printer.ShortenedTypePrinter.IncludeDefaultParam
-import dotty.tools.pc.utils.MtagsEnrichments.*
+import dotty.tools.pc.utils.InteractiveEnrichments.*
 
 import org.eclipse.lsp4j as l
 
@@ -76,10 +77,24 @@ object CaseKeywordCompletion:
       patternOnly,
       hasBind
     )
+
     val printer = ShortenedTypePrinter(search, IncludeDefaultParam.Never)(using indexedContext)
     val selTpe = selector match
       case EmptyTree =>
         parent match
+          /* Parent is an unapply pattern */
+          case UnApply(fn, implicits, patterns) if !fn.tpe.isErroneous =>
+            patternOnly match
+              case None => None
+              case Some(value) =>
+                val argPts = UnapplyArgs(fn.tpe.widen.finalResultType, fn, patterns, parent.srcPos).argTypes
+                patterns.zipWithIndex
+                  .find:
+                    case (Ident(v), tpe) => v.decoded == value
+                    case (Select(_, v), tpe) => v.decoded == value
+                    case t => false
+                  .map((_, id) => argPts(id).widen.deepDealias)
+          /* Parent is a function expecting a case match expression */
           case TreeApply(fun, _) if !fun.tpe.isErroneous =>
             fun.tpe.paramInfoss match
               case (head :: Nil) :: _
@@ -88,15 +103,15 @@ object CaseKeywordCompletion:
                   ) =>
                 val args = head.argTypes.init
                 if args.length > 1 then
-                  Some(definitions.tupleType(args).widen.metalsDealias)
-                else args.headOption.map(_.widen.metalsDealias)
+                  Some(definitions.tupleType(args).widen.deepDealias)
+                else args.headOption.map(_.widen.deepDealias)
               case _ => None
           case _ => None
       case sel =>
-          Some(sel.tpe.widen.metalsDealias)
+          Some(sel.tpe.widen.deepDealias)
 
     selTpe
-      .map { selTpe =>
+      .collect { case selTpe if selTpe != NoType =>
         val selectorSym = selTpe.typeSymbol
         // Special handle case when selector is a tuple or `FunctionN`.
         if definitions.isTupleClass(selectorSym) || definitions.isFunctionClass(
@@ -106,7 +121,8 @@ object CaseKeywordCompletion:
           if patternOnly.isEmpty then
             val selectorTpe = selTpe.show
             val tpeLabel =
-              if !selectorTpe.contains("x$1") then selectorTpe
+              if !selectorTpe.contains("x$1") /* selector of a function type? */ then
+                selectorTpe
               else selector.symbol.info.show
             val label = s"case ${tpeLabel} =>"
             List(
@@ -158,7 +174,7 @@ object CaseKeywordCompletion:
 
           indexedContext.scopeSymbols
             .foreach(s =>
-              val ts = s.info.metalsDealias.typeSymbol
+              val ts = s.info.deepDealias.typeSymbol
               if isValid(ts) then visit(autoImportsGen.inferSymbolImport(ts))
             )
           // Step 2: walk through known subclasses of sealed types.
@@ -261,8 +277,8 @@ object CaseKeywordCompletion:
       clientSupportsSnippets
     )
 
-    val tpeStr = printer.tpe(selector.tpe.widen.metalsDealias.bounds.hi)
-    val tpe = selector.typeOpt.widen.metalsDealias.bounds.hi match
+    val tpeStr = printer.tpe(selector.tpe.widen.deepDealias.bounds.hi)
+    val tpe = selector.typeOpt.widen.deepDealias.bounds.hi match
       case tr @ TypeRef(_, _) => tr.underlying
       case t => t
 

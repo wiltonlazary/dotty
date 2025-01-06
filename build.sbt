@@ -28,10 +28,15 @@ val `scaladoc-js-main` = Build.`scaladoc-js-main`
 val `scaladoc-js-contributors` = Build.`scaladoc-js-contributors`
 val `scala3-bench-run` = Build.`scala3-bench-run`
 val dist = Build.dist
+val `dist-mac-x86_64` = Build.`dist-mac-x86_64`
+val `dist-mac-aarch64` = Build.`dist-mac-aarch64`
+val `dist-win-x86_64` = Build.`dist-win-x86_64`
+val `dist-linux-x86_64` = Build.`dist-linux-x86_64`
+val `dist-linux-aarch64` = Build.`dist-linux-aarch64`
 val `community-build` = Build.`community-build`
 val `sbt-community-build` = Build.`sbt-community-build`
 val `scala3-presentation-compiler` = Build.`scala3-presentation-compiler`
-val `scala3-presentation-compiler-bootstrapped` = Build.`scala3-presentation-compiler-bootstrapped`
+val `scala3-presentation-compiler-testcases` = Build.`scala3-presentation-compiler-testcases`
 
 val sjsSandbox = Build.sjsSandbox
 val sjsJUnitTests = Build.sjsJUnitTests

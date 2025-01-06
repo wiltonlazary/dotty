@@ -11,7 +11,7 @@ import collection.mutable
 import util.{Stats, NoSourcePosition, EqHashMap}
 import config.Config
 import config.Feature.{migrateTo3, sourceVersion}
-import config.Printers.{subtyping, gadts, matchTypes, noPrinter}
+import config.Printers.{subtyping, gadts, matchTypes, capt, noPrinter}
 import config.SourceVersion
 import TypeErasure.{erasedLub, erasedGlb}
 import TypeApplications.*
@@ -24,6 +24,7 @@ import reporting.trace
 import annotation.constructorOnly
 import cc.*
 import NameKinds.WildcardParamName
+import MatchTypes.isConcrete
 
 /** Provides methods to compare types.
  */
@@ -46,6 +47,8 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
     monitored = false
     GADTused = false
     opaquesUsed = false
+    openedExistentials = Nil
+    assocExistentials = Nil
     recCount = 0
     needsGc = false
     if Config.checkTypeComparerReset then checkReset()
@@ -63,6 +66,18 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
 
   /** Indicates whether the subtype check used opaque types */
   private var opaquesUsed: Boolean = false
+
+  /** In capture checking: The existential types that are open because they
+   *  appear in an existential type on the left in an enclosing comparison.
+   */
+  private var openedExistentials: List[TermParamRef] = Nil
+
+  /** In capture checking: A map from existential types that are appear
+   *  in an existential type on the right in an enclosing comparison.
+   *  Each existential gets mapped to the opened existentials to which it
+   *  may resolve at this point.
+   */
+  private var assocExistentials: ExAssoc = Nil
 
   private var myInstance: TypeComparer = this
   def currentInstance: TypeComparer = myInstance
@@ -325,14 +340,13 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
                 isSubPrefix(tp1.prefix, tp2.prefix) ||
                 thirdTryNamed(tp2)
               else
-                (  (tp1.name eq tp2.name)
+                (tp1.name eq tp2.name)
                 && !sym1.is(Private)
                 && tp2.isPrefixDependentMemberRef
                 && isSubPrefix(tp1.prefix, tp2.prefix)
                 && tp1.signature == tp2.signature
                 && !(sym1.isClass && sym2.isClass)  // class types don't subtype each other
-                ) ||
-                thirdTryNamed(tp2)
+                || thirdTryNamed(tp2)
             case _ =>
               secondTry
         end compareNamed
@@ -344,7 +358,8 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
       case tp2: ProtoType =>
         isMatchedByProto(tp2, tp1)
       case tp2: BoundType =>
-        tp2 == tp1 || secondTry
+        tp2 == tp1
+        || secondTry
       case tp2: TypeVar =>
         recur(tp1, typeVarInstance(tp2))
       case tp2: WildcardType =>
@@ -354,7 +369,8 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
         }
         compareWild
       case tp2: LazyRef =>
-        isBottom(tp1) || !tp2.evaluating && recur(tp1, tp2.ref)
+        isBottom(tp1)
+        || !tp2.evaluating && recur(tp1, tp2.ref)
       case CapturingType(_, _) =>
         secondTry
       case tp2: AnnotatedType if !tp2.isRefining =>
@@ -474,7 +490,7 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
         // If `tp1` is in train of being evaluated, don't force it
         // because that would cause an assertionError. Return false instead.
         // See i859.scala for an example where we hit this case.
-        tp2.isRef(AnyClass, skipRefined = false)
+        tp2.isAny
         || !tp1.evaluating && recur(tp1.ref, tp2)
       case AndType(tp11, tp12) =>
         if tp11.stripTypeVar eq tp12.stripTypeVar then recur(tp11, tp2)
@@ -487,7 +503,7 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
         def widenOK =
           (tp2.widenSingletons eq tp2)
           && (tp1.widenSingletons ne tp1)
-          && inFrozenGadtAndConstraint(recur(tp1.widenSingletons, tp2))
+          && inFrozenGadtAndConstraint(recur(tp1.widenSingletons(), tp2))
 
         def joinOK = tp2.dealiasKeepRefiningAnnots match {
           case tp2: AppliedType if !tp2.tycon.typeSymbol.isClass =>
@@ -546,6 +562,8 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
         if reduced.exists then
           recur(reduced, tp2) && recordGadtUsageIf { MatchType.thatReducesUsingGadt(tp1) }
         else thirdTry
+      case Existential(boundVar, tp1unpacked) =>
+        compareExistentialLeft(boundVar, tp1unpacked, tp2)
       case _: FlexType =>
         true
       case _ =>
@@ -627,6 +645,8 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
         thirdTryNamed(tp2)
       case tp2: TypeParamRef =>
         compareTypeParamRef(tp2)
+      case Existential(boundVar, tp2unpacked) =>
+        compareExistentialRight(tp1, boundVar, tp2unpacked)
       case tp2: RefinedType =>
         def compareRefinedSlow: Boolean =
           val name2 = tp2.refinedName
@@ -842,13 +862,27 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
           val refs1 = tp1.captureSet
           try
             if refs1.isAlwaysEmpty then recur(tp1, parent2)
-            else subCaptures(refs1, refs2, frozenConstraint).isOK
-              && sameBoxed(tp1, tp2, refs1)
-              && (recur(tp1.widen.stripCapturing, parent2)
-                 || tp1.isInstanceOf[SingletonType] && recur(tp1, parent2)
-                    // this alternative is needed in case the right hand side is a
-                    // capturing type that contains the lhs as an alternative of a union type.
-                 )
+            else
+              // The singletonOK branch is because we sometimes have a larger capture set in a singleton
+              // than in its underlying type. An example is `f: () -> () ->{x} T`, which might be
+              // the type of a closure. In that case the capture set of `f.type` is `{x}` but the
+              // capture set of the underlying type is `{}`. So without the `singletonOK` test, a singleton
+              // might not be a subtype of its underlying type. Examples where this arises is
+              // capt-capibility.scala and function-combinators.scala
+              val singletonOK = tp1 match
+                case tp1: SingletonType
+                if subCaptures(tp1.underlying.captureSet, refs2, frozen = true).isOK =>
+                  recur(tp1.widen, tp2)
+                case _ =>
+                  false
+              singletonOK
+              || subCaptures(refs1, refs2, frozenConstraint).isOK
+                  && sameBoxed(tp1, tp2, refs1)
+                  && (recur(tp1.widen.stripCapturing, parent2)
+                     || tp1.isInstanceOf[SingletonType] && recur(tp1, parent2)
+                        // this alternative is needed in case the right hand side is a
+                        // capturing type that contains the lhs as an alternative of a union type.
+                    )
           catch case ex: AssertionError =>
             println(i"assertion failed while compare captured $tp1 <:< $tp2")
             throw ex
@@ -864,6 +898,8 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
             false
         }
         compareClassInfo
+      case tp2: FlexibleType =>
+        recur(tp1, tp2.lo)
       case _ =>
         fourthTry
     }
@@ -968,12 +1004,15 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
         compareAppliedType1(tp1, tycon1, args1)
       case tp1: SingletonType =>
         def comparePaths = tp2 match
-          case tp2: TermRef =>
+          case tp2: (TermRef | ThisType) =>
             compareAtoms(tp1, tp2, knownSingletons = true).getOrElse(false)
-            || { // needed to make from-tasty work. test cases: pos/i1753.scala, pos/t839.scala
-              tp2.info.widenExpr.dealias match
-                case tp2i: SingletonType => recur(tp1, tp2i)
-                case _ => false
+            || {
+              // If tp2's underlying type tp2super is also effectively a singleton, compare
+              // against that. The idea is that if tp1 <: tp2super and tp2 <: tp2super and
+              // tp2super is also singleton, then tp1 and tp2 must be the same singleton.
+              // Needed to make from-tasty work. test cases: pos/i1753.scala, pos/t839.scala
+              val tp2super = tp2.superType.widenExpr
+              tp2super.isEffectivelySingleton && recur(tp1, tp2super)
             }
           case _ => false
 
@@ -1059,6 +1098,8 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
       case tp1: ExprType if ctx.phaseId > gettersPhase.id =>
         // getters might have converted T to => T, need to compensate.
         recur(tp1.widenExpr, tp2)
+      case tp1: FlexibleType =>
+        recur(tp1.hi, tp2)
       case _ =>
         false
     }
@@ -1375,7 +1416,7 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
        *    tp1 <:< app2   using isSubType (this might instantiate params in tp2)
        */
       def compareLower(tycon2bounds: TypeBounds, tyconIsTypeRef: Boolean): Boolean =
-        if ((tycon2bounds.lo `eq` tycon2bounds.hi) && !tycon2bounds.isInstanceOf[MatchAlias])
+        if ((tycon2bounds.lo `eq` tycon2bounds.hi) && !tycon2bounds.isMatchAlias)
           if (tyconIsTypeRef) recur(tp1, tp2.superTypeNormalized) && recordGadtUsageIf(MatchType.thatReducesUsingGadt(tp2))
           else isSubApproxHi(tp1, tycon2bounds.lo.applyIfParameterized(args2))
         else
@@ -1398,20 +1439,21 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
           canConstrain(param2) && canInstantiate(param2) ||
           compareLower(bounds(param2), tyconIsTypeRef = false)
         case tycon2: TypeRef =>
-          isMatchingApply(tp1) ||
-          byGadtBounds ||
-          defn.isCompiletimeAppliedType(tycon2.symbol) && compareCompiletimeAppliedType(tp2, tp1, fromBelow = true) || {
-            tycon2.info match {
-              case info2: TypeBounds =>
-                compareLower(info2, tyconIsTypeRef = true)
-              case info2: ClassInfo =>
-                tycon2.name.startsWith("Tuple") &&
-                  defn.isTupleNType(tp2) && recur(tp1, tp2.toNestedPairs) ||
-                tryBaseType(info2.cls)
-              case _ =>
-                fourthTry
-            }
-          } || tryLiftedToThis2
+          isMatchingApply(tp1)
+          || byGadtBounds
+          || defn.isCompiletimeAppliedType(tycon2.symbol)
+              && compareCompiletimeAppliedType(tp2, tp1, fromBelow = true)
+          || tycon2.info.match
+                case info2: TypeBounds =>
+                  compareLower(info2, tyconIsTypeRef = true)
+                case info2: ClassInfo =>
+                  tycon2.name.startsWith("Tuple")
+                  && defn.isTupleNType(tp2)
+                  && recur(tp1, tp2.toNestedPairs)
+                  || tryBaseType(info2.cls)
+                case _ =>
+                  fourthTry
+          || tryLiftedToThis2
 
         case tv: TypeVar =>
           if tv.isInstantiated then
@@ -1448,12 +1490,12 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
               inFrozenGadt { isSubType(bounds1.hi.applyIfParameterized(args1), tp2, approx.addLow) }
             } && recordGadtUsageIf(true)
 
-
           !sym.isClass && {
             defn.isCompiletimeAppliedType(sym) && compareCompiletimeAppliedType(tp1, tp2, fromBelow = false) ||
             { recur(tp1.superTypeNormalized, tp2) && recordGadtUsageIf(MatchType.thatReducesUsingGadt(tp1)) } ||
             tryLiftedToThis1
-          } || byGadtBounds
+          }
+          || byGadtBounds
         case tycon1: TypeProxy =>
           recur(tp1.superTypeNormalized, tp2)
         case _ =>
@@ -1575,7 +1617,7 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
    *  Note: It would be legal to do the lifting also if M does not contain opaque types,
    *  but in this case the retries in tryLiftedToThis would be redundant.
    */
-  private def liftToThis(tp: Type): Type = {
+  def liftToThis(tp: Type): Type = {
 
     def findEnclosingThis(moduleClass: Symbol, from: Symbol): Type =
       if ((from.owner eq moduleClass) && from.isPackageObject && from.is(Opaque)) from.thisType
@@ -1596,7 +1638,7 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
         val tycon1 = liftToThis(tp.tycon)
         if (tycon1 ne tp.tycon) tp.derivedAppliedType(tycon1, tp.args) else tp
       case tp: TypeVar if tp.isInstantiated =>
-        liftToThis(tp.inst)
+        liftToThis(tp.instanceOpt)
       case tp: AnnotatedType =>
         val parent1 = liftToThis(tp.parent)
         if (parent1 ne tp.parent) tp.derivedAnnotatedType(parent1, tp.annot) else tp
@@ -1683,6 +1725,7 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
    *  @param  tparams2  The type parameters of the type constructor applied to `args2`
    */
   def isSubArgs(args1: List[Type], args2: List[Type], tp1: Type, tparams2: List[ParamInfo]): Boolean = {
+
     /** The bounds of parameter `tparam`, where all references to type paramneters
      *  are replaced by corresponding arguments (or their approximations in the case of
      *  wildcard arguments).
@@ -1690,11 +1733,34 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
     def paramBounds(tparam: Symbol): TypeBounds =
       tparam.info.substApprox(tparams2.asInstanceOf[List[Symbol]], args2).bounds
 
-    def recurArgs(args1: List[Type], args2: List[Type], tparams2: List[ParamInfo]): Boolean =
-      if (args1.isEmpty) args2.isEmpty
+    /** Test all arguments. Incomplete argument tests (according to isIncomplete) are deferred in
+     *  the first run and picked up in the second.
+     */
+    def recurArgs(args1: List[Type], args2: List[Type], tparams2: List[ParamInfo],
+                  canDefer: Boolean,
+                  deferred1: List[Type], deferred2: List[Type], deferredTparams2: List[ParamInfo]): Boolean =
+      if args1.isEmpty then
+        args2.isEmpty
+        && (deferred1.isEmpty
+            || recurArgs(
+                  deferred1.reverse, deferred2.reverse, deferredTparams2.reverse,
+                  canDefer = false, Nil, Nil, Nil))
       else args2.nonEmpty && tparams2.nonEmpty && {
         val tparam = tparams2.head
         val v = tparam.paramVarianceSign
+
+        /** An argument test is incomplete if it implies a comparison A <: B where
+         *  A is an AndType or B is an OrType. In these cases we need to run an
+         *  either, which can lose solutions if there are type variables involved.
+         *  So we defer such tests to run last, on the chance that some other argument
+         *  comparison will instantiate or constrain type variables first.
+         */
+        def isIncomplete(arg1: Type, arg2: Type): Boolean =
+          val arg1d = arg1.stripped
+          val arg2d = arg2.stripped
+          (v >= 0) && (arg1d.isInstanceOf[AndType] || arg2d.isInstanceOf[OrType])
+          ||
+          (v <= 0) && (arg1d.isInstanceOf[OrType] || arg2d.isInstanceOf[AndType])
 
         /** Try a capture conversion:
          *  If the original left-hand type `leftRoot` is a path `p.type`,
@@ -1781,10 +1847,26 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
                 else if v > 0 then isSubType(arg1, arg2)
                 else isSameType(arg2, arg1)
 
-        isSubArg(args1.head, args2.head)
-      } && recurArgs(args1.tail, args2.tail, tparams2.tail)
+        val arg1 = args1.head
+        val arg2 = args2.head
+        val rest1 = args1.tail
+        if !canDefer
+            || rest1.isEmpty && deferred1.isEmpty
+                // skip the incompleteness test if this is the last argument and no previous argument tests were incomplete
+            || !isIncomplete(arg1, arg2)
+        then
+          isSubArg(arg1, arg2)
+          && recurArgs(
+                rest1, args2.tail, tparams2.tail, canDefer,
+                deferred1, deferred2, deferredTparams2)
+        else
+          recurArgs(
+            rest1, args2.tail, tparams2.tail, canDefer,
+            arg1 :: deferred1, arg2 :: deferred2, tparams2.head :: deferredTparams2)
+      }
 
-    recurArgs(args1, args2, tparams2)
+    recurArgs(args1, args2, tparams2, canDefer = true, Nil, Nil, Nil)
+
   }
 
   /** Test whether `tp1` has a base type of the form `B[T1, ..., Tn]` where
@@ -1892,7 +1974,8 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
       // check whether `op2` generates a weaker constraint than `op1`
       val leftConstraint = constraint
       constraint = preConstraint
-      if !(op && subsumes(leftConstraint, constraint, preConstraint)) then
+      val res = try op catch case _: TypeError => false
+      if !(res && subsumes(leftConstraint, constraint, preConstraint)) then
         if constr != noPrinter && !subsumes(constraint, leftConstraint, preConstraint) then
           constr.println(i"CUT - prefer $leftConstraint over $constraint")
         constraint = leftConstraint
@@ -2051,11 +2134,16 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
       // resort to reflection to invoke the member. And Java reflection needs to know exact
       // erased parameter types. See neg/i12211.scala. Other reflection algorithms could
       // conceivably dispatch without knowing precise parameter signatures. One can signal
-      // this by inheriting from the `scala.reflect.SignatureCanBeImprecise` marker trait,
+      // this by inheriting from the `scala.Selectable.WithoutPreciseParameterTypes` marker trait,
       // in which case the signature test is elided.
+      // We also relax signature checking when checking bounds,
+      // for instance in tests/pos/i17222.izumi.min.scala
+      // the `go` method info as seen from `Foo` is `>: (in: Any): Unit <: (Nothing): Unit`
+      // So the parameter types conform but their signatures don't match.
       def sigsOK(symInfo: Type, info2: Type) =
         tp2.underlyingClassRef(refinementOK = true).member(name).exists
         || tp2.derivesFrom(defn.WithoutPreciseParameterTypesClass)
+        || ctx.mode.is(Mode.CheckBoundsOrSelfType)
         || symInfo.isInstanceOf[MethodType]
             && symInfo.signature.consistentParams(info2.signature)
 
@@ -2264,7 +2352,7 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
         Stats.record("cache same type")
         sames = new util.EqHashMap()
       val res =
-        try isSubType(tp1, tp2) && isSubType(tp2, tp1)
+        try rollbackConstraintsUnless(isSubType(tp1, tp2) && isSubType(tp2, tp1))
         finally
           sameLevel -= 1
           sames = savedSames
@@ -2312,8 +2400,8 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
   }
 
   /** The greatest lower bound of two types */
-  def glb(tp1: Type, tp2: Type): Type = /*>|>*/ trace(s"glb(${tp1.show}, ${tp2.show})", subtyping, show = true) /*<|<*/ {
-    if (tp1 eq tp2) tp1
+  def glb(tp1: Type, tp2: Type): Type = // trace(s"glb(${tp1.show}, ${tp2.show})", subtyping, show = true):
+    if tp1 eq tp2 then tp1
     else if !tp1.exists || (tp1 eq WildcardType) then tp2
     else if !tp2.exists || (tp2 eq WildcardType) then tp1
     else if tp1.isAny && !tp2.isLambdaSub || tp1.isAnyKind || isBottom(tp2) then tp2
@@ -2321,17 +2409,18 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
     else
       def mergedGlb(tp1: Type, tp2: Type): Type =
         val tp1a = dropIfSuper(tp1, tp2)
-        if tp1a ne tp1 then glb(tp1a, tp2)
+        if tp1a ne tp1 then
+          glb(tp1a, tp2)
         else
           val tp2a = dropIfSuper(tp2, tp1)
           if tp2a ne tp2 then glb(tp1, tp2a)
           else tp2 match // normalize to disjunctive normal form if possible.
-            case tp2 @ OrType(tp21, tp22) =>
-              lub(tp1 & tp21, tp1 & tp22, isSoft = tp2.isSoft)
+            case tp2 @ OrType(tp2L, tp2R) =>
+              lub(tp1 & tp2L, tp1 & tp2R, isSoft = tp2.isSoft)
             case _ =>
               tp1 match
-                case tp1 @ OrType(tp11, tp12) =>
-                  lub(tp11 & tp2, tp12 & tp2, isSoft = tp1.isSoft)
+                case tp1 @ OrType(tp1L, tp1R) =>
+                  lub(tp1L & tp2, tp1R & tp2, isSoft = tp1.isSoft)
                 case tp1: ConstantType =>
                   tp2 match
                     case tp2: ConstantType =>
@@ -2346,8 +2435,10 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
                       NothingType
                     case _ => andType(tp1, tp2)
                 case _ => andType(tp1, tp2)
+      end mergedGlb
+
       mergedGlb(dropExpr(tp1.stripLazyRef), dropExpr(tp2.stripLazyRef))
-  }
+  end glb
 
   def widenInUnions(using Context): Boolean =
     migrateTo3 || ctx.erasedTypes
@@ -2356,14 +2447,23 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
    *  @param canConstrain  If true, new constraints might be added to simplify the lub.
    *  @param isSoft        If the lub is a union, this determines whether it's a soft union.
    */
-  def lub(tp1: Type, tp2: Type, canConstrain: Boolean = false, isSoft: Boolean = true): Type = /*>|>*/ trace(s"lub(${tp1.show}, ${tp2.show}, canConstrain=$canConstrain, isSoft=$isSoft)", subtyping, show = true) /*<|<*/ {
-    if (tp1 eq tp2) tp1
+  def lub(tp1: Type, tp2: Type, canConstrain: Boolean = false, isSoft: Boolean = true): Type = // trace(s"lub(${tp1.show}, ${tp2.show}, canConstrain=$canConstrain, isSoft=$isSoft)", subtyping, show = true):
+    if tp1 eq tp2 then tp1
     else if !tp1.exists || (tp2 eq WildcardType) then tp1
     else if !tp2.exists || (tp1 eq WildcardType) then tp2
     else if tp1.isAny && !tp2.isLambdaSub || tp1.isAnyKind || isBottom(tp2) then tp1
     else if tp2.isAny && !tp1.isLambdaSub || tp2.isAnyKind || isBottom(tp1) then tp2
     else
-      def mergedLub(tp1: Type, tp2: Type): Type = {
+      def mergedLub(tp1: Type, tp2: Type): Type =
+        // First, if tp1 and tp2 are the same singleton type, return one of them.
+        if tp1.isSingleton && isSubType(tp1, tp2, whenFrozen = !canConstrain) then
+          return tp2
+        if tp2.isSingleton && isSubType(tp2, tp1, whenFrozen = !canConstrain) then
+          return tp1
+
+        // Second, handle special cases when tp1 and tp2 are disjunctions of
+        // singleton types. This saves time otherwise spent in
+        // costly subtype comparisons performed in dropIfSub below.
         tp1.atoms match
           case Atoms.Range(lo1, hi1) if !widenInUnions =>
             tp2.atoms match
@@ -2373,20 +2473,24 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
                 if (hi1 & hi2).isEmpty then return orType(tp1, tp2, isSoft = isSoft)
               case none =>
           case none =>
-        val t1 = mergeIfSuper(tp1, tp2, canConstrain)
-        if (t1.exists) return t1
 
-        val t2 = mergeIfSuper(tp2, tp1, canConstrain)
-        if (t2.exists) return t2
-
-        def widen(tp: Type) = if (widenInUnions) tp.widen else tp.widenIfUnstable
+        // Third, try to simplify after widening as follows:
+        //  1. Drop all or-factors in tp2 that are subtypes of an or-factor
+        //     in tp1, yielding tp2Final.
+        //  2. Drop all or-factors in tp1 that are subtypes of an or-factor
+        //     in tp2Final, yielding tp1Final.
+        //  3. Combine the two final types in an OrType
+        def widen(tp: Type) =
+          if widenInUnions then tp.widen else tp.widenIfUnstable
         val tp1w = widen(tp1)
         val tp2w = widen(tp2)
-        if ((tp1 ne tp1w) || (tp2 ne tp2w)) lub(tp1w, tp2w, canConstrain = canConstrain, isSoft = isSoft)
-        else orType(tp1w, tp2w, isSoft = isSoft) // no need to check subtypes again
-      }
+        val tp2Final = dropIfSub(tp2w, tp1w, canConstrain)
+        val tp1Final = dropIfSub(tp1w, tp2Final, canConstrain)
+        recombine(tp1Final, tp2Final, orType(_, _, isSoft = isSoft))
+      end mergedLub
+
       mergedLub(dropExpr(tp1.stripLazyRef), dropExpr(tp2.stripLazyRef))
-  }
+  end lub
 
   /** Try to produce joint arguments for a lub `A[T_1, ..., T_n] | A[T_1', ..., T_n']` using
    *  the following strategies:
@@ -2448,60 +2552,40 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
         Nil
     }
 
-  private def recombineAnd(tp: AndType, tp1: Type, tp2: Type) =
-    if (!tp1.exists) tp2
-    else if (!tp2.exists) tp1
-    else tp.derivedAndType(tp1, tp2)
+  private def recombine(tp1: Type, tp2: Type, rebuild: (Type, Type) => Type): Type =
+    if !tp1.exists then tp2
+    else if !tp2.exists then tp1
+    else rebuild(tp1, tp2)
+
+  private def recombine(tp1: Type, tp2: Type, tp: AndOrType): Type =
+    recombine(tp1, tp2, tp.derivedAndOrType)
 
   /** If some (&-operand of) `tp` is a supertype of `sub` replace it with `NoType`.
    */
   private def dropIfSuper(tp: Type, sub: Type): Type =
-    if (isSubTypeWhenFrozen(sub, tp)) NoType
-    else tp match {
+    // We need to be careful to check branches of AndTypes and OrTypes in correct order,
+    // see discussion in issue #20516.
+    tp match
       case tp @ AndType(tp1, tp2) =>
-        recombineAnd(tp, dropIfSuper(tp1, sub), dropIfSuper(tp2, sub))
+        recombine(dropIfSuper(tp1, sub), dropIfSuper(tp2, sub), tp)
+      case tp: TypeVar if tp.isInstantiated =>
+        dropIfSuper(tp.instanceOpt, sub)
       case _ =>
-        tp
-    }
+        if isSubTypeWhenFrozen(sub, tp) then NoType else tp
+  end dropIfSuper
 
-  /** Merge `t1` into `tp2` if t1 is a subtype of some &-summand of tp2.
-   */
-  private def mergeIfSub(tp1: Type, tp2: Type): Type =
-    if (isSubTypeWhenFrozen(tp1, tp2)) tp1
-    else tp2 match {
-      case tp2 @ AndType(tp21, tp22) =>
-        val lower1 = mergeIfSub(tp1, tp21)
-        if (lower1 eq tp21) tp2
-        else if (lower1.exists) lower1 & tp22
-        else {
-          val lower2 = mergeIfSub(tp1, tp22)
-          if (lower2 eq tp22) tp2
-          else if (lower2.exists) tp21 & lower2
-          else NoType
-        }
+  /** If some (|-operand of) `tp` is a subtype of `sup` replace it with `NoType`. */
+  private def dropIfSub(tp: Type, sup: Type, canConstrain: Boolean): Type =
+    // We need to be careful to check branches of AndTypes and OrTypes in correct order,
+    // see discussion in issue #20516.
+    tp match
+      case tp @ OrType(tp1, tp2) =>
+        recombine(dropIfSub(tp1, sup, canConstrain), dropIfSub(tp2, sup, canConstrain), tp)
+      case tp: TypeVar if tp.isInstantiated =>
+        dropIfSub(tp.instanceOpt, sup, canConstrain)
       case _ =>
-        NoType
-    }
-
-  /** Merge `tp1` into `tp2` if tp1 is a supertype of some |-summand of tp2.
-   *  @param canConstrain  If true, new constraints might be added to make the merge possible.
-   */
-  private def mergeIfSuper(tp1: Type, tp2: Type, canConstrain: Boolean): Type =
-    if (isSubType(tp2, tp1, whenFrozen = !canConstrain)) tp1
-    else tp2 match {
-      case tp2 @ OrType(tp21, tp22) =>
-        val higher1 = mergeIfSuper(tp1, tp21, canConstrain)
-        if (higher1 eq tp21) tp2
-        else if (higher1.exists) lub(higher1, tp22, isSoft = tp2.isSoft)
-        else {
-          val higher2 = mergeIfSuper(tp1, tp22, canConstrain)
-          if (higher2 eq tp22) tp2
-          else if (higher2.exists) lub(tp21, higher2, isSoft = tp2.isSoft)
-          else NoType
-        }
-      case _ =>
-        NoType
-    }
+        if isSubType(tp, sup, whenFrozen = !canConstrain) then NoType else tp
+  end dropIfSub
 
   /** There's a window of vulnerability between ElimByName and Erasure where some
    *  ExprTypes `=> T` that appear as parameters of function types are not yet converted
@@ -2644,11 +2728,11 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
     case tp1: TypeVar if tp1.isInstantiated =>
       tp1.underlying & tp2
     case CapturingType(parent1, refs1) =>
-      val refs2 = tp2.captureSet
-      if subCaptures(refs2, refs1, frozen = true).isOK
-        && tp1.isBoxedCapturing == tp2.isBoxedCapturing
-      then (parent1 & tp2).capturing(refs2)
-      else tp1.derivedCapturingType(parent1 & tp2, refs1)
+      val jointRefs = refs1 ** tp2.captureSet
+      if jointRefs.isAlwaysEmpty then parent1 & tp2
+      else if tp1.isBoxCompatibleWith(tp2) then
+        tp1.derivedCapturingType(parent1 & tp2, jointRefs)
+      else NoType
     case tp1: AnnotatedType if !tp1.isRefining =>
       tp1.underlying & tp2
     case _ =>
@@ -2673,6 +2757,11 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
       }
     case tp1: TypeVar if tp1.isInstantiated =>
       lub(tp1.underlying, tp2, isSoft = isSoft)
+    case CapturingType(parent1, refs1) =>
+      if tp1.isBoxCompatibleWith(tp2) then
+        tp1.derivedCapturingType(lub(parent1, tp2, isSoft = isSoft), refs1)
+      else // TODO: Analyze cases where they are not box compatible
+        NoType
     case tp1: AnnotatedType if !tp1.isRefining =>
       lub(tp1.underlying, tp2, isSoft = isSoft)
     case _ =>
@@ -2711,7 +2800,109 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
       false
   }
 
+  // ----------- Capture checking -----------------------------------------------
+
+  /** A type associating instantiatable existentials on the right of a comparison
+   *  with the existentials they can be instantiated with.
+   */
+  type ExAssoc = List[(TermParamRef, List[TermParamRef])]
+
+  private def compareExistentialLeft(boundVar: TermParamRef, tp1unpacked: Type, tp2: Type)(using Context): Boolean =
+    val saved = openedExistentials
+    try
+      openedExistentials = boundVar :: openedExistentials
+      recur(tp1unpacked, tp2)
+    finally
+      openedExistentials = saved
+
+  private def compareExistentialRight(tp1: Type, boundVar: TermParamRef, tp2unpacked: Type)(using Context): Boolean =
+    val saved = assocExistentials
+    try
+      assocExistentials = (boundVar, openedExistentials) :: assocExistentials
+      recur(tp1, tp2unpacked)
+    finally
+      assocExistentials = saved
+
+  /** Is `tp1` an existential var that subsumes `tp2`? This is the case if `tp1` is
+   *  instantiatable (i.e. it's a key in `assocExistentials`) and one of the
+   *  following is true:
+   *    - `tp2` is not an existential var,
+   *    - `tp1` is associated via `assocExistentials` with `tp2`,
+   *    - `tp2` appears as key in `assocExistentials` further out than `tp1`.
+   *  The third condition allows to instantiate c2 to c1 in
+   *    EX c1: A -> Ex c2. B
+   */
+  def subsumesExistentially(tp1: TermParamRef, tp2: CaptureRef)(using Context): Boolean =
+    def canInstantiateWith(assoc: ExAssoc): Boolean = assoc match
+      case (bv, bvs) :: assoc1 =>
+        if bv == tp1 then
+          !Existential.isExistentialVar(tp2)
+          || bvs.contains(tp2)
+          || assoc1.exists(_._1 == tp2)
+        else
+          canInstantiateWith(assoc1)
+      case Nil =>
+        false
+    Existential.isExistentialVar(tp1) && canInstantiateWith(assocExistentials)
+
+  /** bi-map taking existentials to the left of a comparison to matching
+   *  existentials on the right. This is not a bijection. However
+   *  we have `forwards(backwards(bv)) == bv` for an existentially bound `bv`.
+   *  That's enough to qualify as a BiTypeMap.
+   */
+  private class MapExistentials(assoc: ExAssoc)(using Context) extends BiTypeMap:
+
+    private def bad(t: Type) =
+      Existential.badExistential
+        .showing(i"existential match not found for $t in $assoc", capt)
+
+    def apply(t: Type) = t match
+      case t: TermParamRef if Existential.isExistentialVar(t) =>
+        // Find outermost existential on the right that can be instantiated to `t`,
+        // or `badExistential` if none exists.
+        def findMapped(assoc: ExAssoc): CaptureRef = assoc match
+          case (bv, assocBvs) :: assoc1 =>
+            val outer = findMapped(assoc1)
+            if !Existential.isBadExistential(outer) then outer
+            else if assocBvs.contains(t) then bv
+            else bad(t)
+          case Nil =>
+            bad(t)
+        findMapped(assoc)
+      case _ =>
+        mapOver(t)
+
+    /** The inverse takes existentials on the right to the innermost existential
+     *  on the left to which they can be instantiated.
+     */
+    lazy val inverse = new BiTypeMap:
+      def apply(t: Type) = t match
+        case t: TermParamRef if Existential.isExistentialVar(t) =>
+          assoc.find(_._1 == t) match
+            case Some((_, bvs)) if bvs.nonEmpty => bvs.head
+            case _ => bad(t)
+        case _ =>
+          mapOver(t)
+
+        def inverse = MapExistentials.this
+        override def toString = "MapExistentials.inverse"
+    end inverse
+  end MapExistentials
+
   protected def subCaptures(refs1: CaptureSet, refs2: CaptureSet, frozen: Boolean)(using Context): CaptureSet.CompareResult =
+    try
+      if assocExistentials.isEmpty then
+        refs1.subCaptures(refs2, frozen)
+      else
+        val mapped = refs1.map(MapExistentials(assocExistentials))
+        if mapped.elems.exists(Existential.isBadExistential)
+        then CaptureSet.CompareResult.Fail(refs2 :: Nil)
+        else subCapturesMapped(mapped, refs2, frozen)
+    catch case ex: AssertionError =>
+      println(i"fail while subCaptures $refs1 <:< $refs2")
+      throw ex
+
+  protected def subCapturesMapped(refs1: CaptureSet, refs2: CaptureSet, frozen: Boolean)(using Context): CaptureSet.CompareResult =
     refs1.subCaptures(refs2, frozen)
 
   /** Is the boxing status of tp1 and tp2 the same, or alternatively, is
@@ -2855,6 +3046,8 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
         tp
       case tp: ConstantType =>
         tp
+      case tp: AppliedType if tp.tryCompiletimeConstantFold.exists =>
+        tp.tryCompiletimeConstantFold
       case tp: HKTypeLambda =>
         tp
       case tp: ParamRef =>
@@ -2877,6 +3070,13 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
       case pair if pending != null && pending.contains(pair) =>
         false
 
+      /* Nothing is not a class type in the spec but dotc represents it as if it were one.
+       * Get it out of the way early to avoid mistakes (see for example #20897).
+       * Nothing ⋔ T and T ⋔ Nothing for all T.
+       */
+      case (tp1, tp2) if tp1.isExactlyNothing || tp2.isExactlyNothing =>
+        true
+
       // Cases where there is an intersection or union on the right
       case (tp1, tp2: OrType) =>
         provablyDisjoint(tp1, tp2.tp1, pending) && provablyDisjoint(tp1, tp2.tp2, pending)
@@ -2889,14 +3089,21 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
       case (tp1: AndType, tp2) =>
         provablyDisjoint(tp1.tp1, tp2, pending) || provablyDisjoint(tp1.tp2, tp2, pending)
 
+      /* Handle AnyKind now for the same reason as Nothing above: it is not a real class type.
+       * Other than the rules with Nothing, unions and intersections, there is structurally
+       * no rule such that AnyKind ⋔ T or T ⋔ AnyKind for any T.
+       */
+      case (tp1, tp2) if tp1.isDirectRef(AnyKindClass) || tp2.isDirectRef(AnyKindClass) =>
+        false
+
       // Cases involving type lambdas
       case (tp1: HKTypeLambda, tp2: HKTypeLambda) =>
         tp1.paramNames.sizeCompare(tp2.paramNames) != 0
           || provablyDisjoint(tp1.resultType, tp2.resultType, pending)
       case (tp1: HKTypeLambda, tp2) =>
-        !tp2.isDirectRef(defn.AnyKindClass)
+        true
       case (tp1, tp2: HKTypeLambda) =>
-        !tp1.isDirectRef(defn.AnyKindClass)
+        true
 
       /* Cases where both are unique values (enum cases or constant types)
        *
@@ -2995,22 +3202,19 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
       cls.is(Sealed) && !cls.hasAnonymousChild
 
     def decompose(cls: Symbol): List[Symbol] =
-      cls.children.map { child =>
-        if child.isTerm then child.info.classSymbol
-        else child
+      cls.children.flatMap { child =>
+        if child.isTerm then
+          child.info.classSymbols // allow enum vals to be decomposed to their enum class (then filtered out) and any mixins
+        else child :: Nil
       }.filter(child => child.exists && child != cls)
 
-    // TODO? Special-case for Nothing and Null? We probably need Nothing/Null disjoint from Nothing/Null
     def eitherDerivesFromOther(cls1: Symbol, cls2: Symbol): Boolean =
       cls1.derivesFrom(cls2) || cls2.derivesFrom(cls1)
 
     def smallestNonTraitBase(cls: Symbol): Symbol =
       cls.asClass.baseClasses.find(!_.is(Trait)).get
 
-    if cls1 == defn.AnyKindClass || cls2 == defn.AnyKindClass then
-      // For some reason, A.derivesFrom(AnyKind) returns false, so we have to handle it specially
-      false
-    else if (eitherDerivesFromOther(cls1, cls2))
+    if (eitherDerivesFromOther(cls1, cls2))
       false
     else
       if (cls1.is(Final) || cls2.is(Final))
@@ -3034,6 +3238,12 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
   end provablyDisjointClasses
 
   private def provablyDisjointTypeArgs(cls: ClassSymbol, args1: List[Type], args2: List[Type], pending: util.HashSet[(Type, Type)])(using Context): Boolean =
+    // sjrd: I will not be surprised when this causes further issues in the future.
+    // This is a compromise to be able to fix #21295 without breaking the world.
+    def cannotBeNothing(tp: Type): Boolean = tp match
+      case tp: TypeParamRef => cannotBeNothing(tp.paramInfo)
+      case _                => !(tp.loBound.stripTypeVar <:< defn.NothingType)
+
     // It is possible to conclude that two types applied are disjoint by
     // looking at covariant type parameters if the said type parameters
     // are disjoint and correspond to fields.
@@ -3042,9 +3252,20 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
     def covariantDisjoint(tp1: Type, tp2: Type, tparam: TypeParamInfo): Boolean =
       provablyDisjoint(tp1, tp2, pending) && typeparamCorrespondsToField(cls.appliedRef, tparam)
 
-    // In the invariant case, direct type parameter disjointness is enough.
+    // In the invariant case, we have more ways to prove disjointness:
+    // - either the type param corresponds to a field, like in the covariant case, or
+    // - one of the two actual args can never be `Nothing`.
+    // The latter condition, as tested by `cannotBeNothing`, is ad hoc and was
+    // not carefully evaluated to be sound. We have it because we had to
+    // reintroduce the former condition to fix #21295, and alone, that broke a
+    // lot of existing test cases.
+    // Having either one of the two conditions be true is better than not requiring
+    // any, which was the status quo before #21295.
     def invariantDisjoint(tp1: Type, tp2: Type, tparam: TypeParamInfo): Boolean =
-      provablyDisjoint(tp1, tp2, pending)
+      provablyDisjoint(tp1, tp2, pending) && {
+        typeparamCorrespondsToField(cls.appliedRef, tparam)
+          || (cannotBeNothing(tp1) || cannotBeNothing(tp2))
+      }
 
     args1.lazyZip(args2).lazyZip(cls.typeParams).exists {
       (arg1, arg2, tparam) =>
@@ -3071,9 +3292,10 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
 
   /** The trace of comparison operations when performing `op` */
   def explained[T](op: ExplainingTypeComparer => T, header: String = "Subtype trace:", short: Boolean)(using Context): String =
-    val cmp = explainingTypeComparer(short)
-    inSubComparer(cmp)(op)
-    cmp.lastTrace(header)
+    explaining(cmp => { op(cmp); cmp.lastTrace(header) }, short)
+
+  def explaining[T](op: ExplainingTypeComparer => T, short: Boolean)(using Context): T =
+    inSubComparer(explainingTypeComparer(short))(op)
 
   def reduceMatchWith[T](op: MatchReducer => T)(using Context): T =
     inSubComparer(matchReducer)(op)
@@ -3210,8 +3432,8 @@ object TypeComparer {
   def subtypeCheckInProgress(using Context): Boolean =
     comparing(_.subtypeCheckInProgress)
 
-  def instanceType(param: TypeParamRef, fromBelow: Boolean, widenUnions: Boolean, maxLevel: Int = Int.MaxValue)(using Context): Type =
-    comparing(_.instanceType(param, fromBelow, widenUnions, maxLevel))
+  def instanceType(param: TypeParamRef, fromBelow: Boolean, widen: Widen, maxLevel: Int = Int.MaxValue)(using Context): Type =
+    comparing(_.instanceType(param, fromBelow, widen: Widen, maxLevel))
 
   def approximation(param: TypeParamRef, fromBelow: Boolean, maxLevel: Int = Int.MaxValue)(using Context): Type =
     comparing(_.approximation(param, fromBelow, maxLevel))
@@ -3231,8 +3453,8 @@ object TypeComparer {
   def addToConstraint(tl: TypeLambda, tvars: List[TypeVar])(using Context): Boolean =
     comparing(_.addToConstraint(tl, tvars))
 
-  def widenInferred(inst: Type, bound: Type, widenUnions: Boolean)(using Context): Type =
-    comparing(_.widenInferred(inst, bound, widenUnions))
+  def widenInferred(inst: Type, bound: Type, widen: Widen)(using Context): Type =
+    comparing(_.widenInferred(inst, bound, widen: Widen))
 
   def dropTransparentTraits(tp: Type, bound: Type)(using Context): Type =
     comparing(_.dropTransparentTraits(tp, bound))
@@ -3243,11 +3465,17 @@ object TypeComparer {
   def explained[T](op: ExplainingTypeComparer => T, header: String = "Subtype trace:", short: Boolean = false)(using Context): String =
     comparing(_.explained(op, header, short))
 
+  def explaining[T](op: ExplainingTypeComparer => T, short: Boolean = false)(using Context): T =
+    comparing(_.explaining(op, short))
+
   def reduceMatchWith[T](op: MatchReducer => T)(using Context): T =
     comparing(_.reduceMatchWith(op))
 
   def subCaptures(refs1: CaptureSet, refs2: CaptureSet, frozen: Boolean)(using Context): CaptureSet.CompareResult =
     comparing(_.subCaptures(refs1, refs2, frozen))
+
+  def subsumesExistentially(tp1: TermParamRef, tp2: CaptureRef)(using Context) =
+    comparing(_.subsumesExistentially(tp1, tp2))
 }
 
 object MatchReducer:
@@ -3351,49 +3579,6 @@ class MatchReducer(initctx: Context) extends TypeComparer(initctx) {
 
     // See https://docs.scala-lang.org/sips/match-types-spec.html#matching
     def matchSpeccedPatMat(spec: MatchTypeCaseSpec.SpeccedPatMat): MatchResult =
-      /* Concreteness checking
-       *
-       * When following a baseType and reaching a non-wildcard, in-variant-pos type capture,
-       * we have to make sure that the scrutinee is concrete enough to uniquely determine
-       * the values of the captures. This comes down to checking that we do not follow any
-       * upper bound of an abstract type.
-       *
-       * See notably neg/wildcard-match.scala for examples of this.
-       *
-       * See neg/i13780.scala and neg/i13780-1.scala for ClassCastException
-       * reproducers if we disable this check.
-       */
-
-      def followEverythingConcrete(tp: Type): Type =
-        val widenedTp = tp.widenDealias
-        val tp1 = widenedTp.normalized
-
-        def followTp1: Type =
-          // If both widenDealias and normalized did something, start again
-          if (tp1 ne widenedTp) && (widenedTp ne tp) then followEverythingConcrete(tp1)
-          else tp1
-
-        tp1 match
-          case tp1: TypeRef =>
-            tp1.info match
-              case TypeAlias(tl: HKTypeLambda)  => tl
-              case MatchAlias(tl: HKTypeLambda) => tl
-              case _                            => followTp1
-          case tp1 @ AppliedType(tycon, args) =>
-            val concreteTycon = followEverythingConcrete(tycon)
-            if concreteTycon eq tycon then followTp1
-            else followEverythingConcrete(concreteTycon.applyIfParameterized(args))
-          case _ =>
-            followTp1
-      end followEverythingConcrete
-
-      def isConcrete(tp: Type): Boolean =
-        followEverythingConcrete(tp) match
-          case tp1: AndOrType => isConcrete(tp1.tp1) && isConcrete(tp1.tp2)
-          case tp1            => tp1.underlyingClassRef(refinementOK = true).exists
-
-      // Actual matching logic
-
       val instances = Array.fill[Type](spec.captureCount)(NoType)
       val noInstances = mutable.ListBuffer.empty[(TypeName, TypeBounds)]
 
@@ -3462,22 +3647,95 @@ class MatchReducer(initctx: Context) extends TypeComparer(initctx) {
                 false
 
           case MatchTypeCasePattern.TypeMemberExtractor(typeMemberName, capture) =>
+            /** Try to remove references to `skolem` from a type in accordance with the spec.
+             *
+             *  References to `skolem` occuring are avoided by following aliases and
+             *  singletons.
+             *
+             *  If any reference to `skolem` remains in the result type,
+             *  `refersToSkolem` is set to true.
+             */
+            class DropSkolemMap(skolem: SkolemType) extends TypeMap:
+              var refersToSkolem = false
+              def apply(tp: Type): Type =
+                if refersToSkolem then
+                  return tp
+                tp match
+                  case `skolem` =>
+                    refersToSkolem = true
+                    tp
+                  case tp: NamedType =>
+                    val pre1 = apply(tp.prefix)
+                    if refersToSkolem then
+                      tp match
+                        case tp: TermRef => tp.info.widenExpr.dealias match
+                          case info: SingletonType =>
+                            refersToSkolem = false
+                            apply(info)
+                          case _ =>
+                            tp.derivedSelect(pre1)
+                        case tp: TypeRef => tp.info match
+                          case info: AliasingBounds =>
+                            refersToSkolem = false
+                            apply(info.alias)
+                          case _ =>
+                            tp.derivedSelect(pre1)
+                    else
+                      tp.derivedSelect(pre1)
+                  case tp: LazyRef =>
+                    // By default, TypeMap maps LazyRefs lazily. We need to
+                    // force it for `refersToSkolem` to be correctly set.
+                    apply(tp.ref)
+                  case _ =>
+                    mapOver(tp)
+            end DropSkolemMap
+            /** Try to remove references to `skolem` from `u` in accordance with the spec.
+             *
+             *  If any reference to `skolem` remains in the result type, return
+             *  NoType instead.
+             */
+            def dropSkolem(u: Type, skolem: SkolemType): Type =
+              val dmap = DropSkolemMap(skolem)
+              val res = dmap(u)
+              if dmap.refersToSkolem then NoType else res
+
             val stableScrut: SingletonType = scrut match
               case scrut: SingletonType => scrut
               case _                    => SkolemType(scrut)
+
             stableScrut.member(typeMemberName) match
               case denot: SingleDenotation if denot.exists =>
-                val info = denot.info match
-                  case TypeAlias(alias)                => alias              // Extract the alias
-                  case ClassInfo(prefix, cls, _, _, _) => prefix.select(cls) // Re-select the class from the prefix
-                  case info => info // Notably, RealTypeBounds, which will eventually give a MatchResult.NoInstances
-                val infoRefersToSkolem = stableScrut.isInstanceOf[SkolemType] && stableScrut.occursIn(info)
-                val info1 = info match
-                  case info: TypeBounds        => info                       // Will already trigger a MatchResult.NoInstances
-                  case _ if infoRefersToSkolem => RealTypeBounds(info, info) // Explicitly trigger a MatchResult.NoInstances
-                  case _                       => info                       // We have a match
-                rec(capture, info1, variance = 0, scrutIsWidenedAbstract)
+                val info = stableScrut match
+                  case skolem: SkolemType =>
+                    /* If it is a skolem type, we cannot have class selections nor
+                     * abstract type selections. If it is an alias, we try to remove
+                     * any reference to the skolem from the right-hand-side. If that
+                     * succeeds, we take the result, otherwise we fail as not-specific.
+                     */
+
+                    def adaptToTriggerNotSpecific(info: Type): Type = info match
+                      case info: TypeBounds => info
+                      case _                => RealTypeBounds(info, info)
+
+                    denot.info match
+                      case denotInfo: AliasingBounds =>
+                        val alias = denotInfo.alias
+                        dropSkolem(alias, skolem).orElse(adaptToTriggerNotSpecific(alias))
+                      case ClassInfo(prefix, cls, _, _, _) =>
+                        // for clean error messages
+                        adaptToTriggerNotSpecific(prefix.select(cls))
+                      case denotInfo =>
+                        adaptToTriggerNotSpecific(denotInfo)
+
+                  case _ =>
+                    // The scrutinee type is truly stable. We select the type member directly on it.
+                    stableScrut.select(typeMemberName)
+                end info
+
+                rec(capture, info, variance = 0, scrutIsWidenedAbstract)
+
               case _ =>
+                // The type member was not found; no match
                 false
       end rec
 
@@ -3594,23 +3852,14 @@ class MatchReducer(initctx: Context) extends TypeComparer(initctx) {
             MatchTypeTrace.emptyScrutinee(scrut)
             NoType
       case Nil =>
-        val casesText = MatchTypeTrace.noMatchesText(scrut, cases)
-        ErrorType(reporting.MatchTypeNoCases(casesText))
+        /* TODO warn ? then re-enable warn/12974.scala:26
+        val noCasesText = MatchTypeTrace.noMatchesText(scrut, cases)
+        report.warning(reporting.MatchTypeNoCases(noCasesText), pos = ???)
+        */
+        MatchTypeTrace.noMatches(scrut, cases)
+        NoType
 
-    inFrozenConstraint {
-      if scrut.isError then
-        // if the scrutinee is an error type
-        // then just return that as the result
-        // not doing so will result in the first type case matching
-        // because ErrorType (as a FlexType) is <:< any type case
-        // this situation can arise from any kind of nesting of match types,
-        // e.g. neg/i12049 `Tuple.Concat[Reverse[ts], (t2, t1)]`
-        // if Reverse[ts] fails with no matches,
-        // the error type should be the reduction of the Concat too
-        scrut
-      else
-        recur(cases)
-    }
+    inFrozenConstraint(recur(cases))
   }
 }
 
@@ -3631,6 +3880,11 @@ class ExplainingTypeComparer(initctx: Context, short: Boolean) extends TypeCompa
   private val b = new StringBuilder
   private var lastForwardGoal: String | Null = null
 
+  private def appendFailure(x: String) =
+    if lastForwardGoal != null then  // last was deepest goal that failed
+      b.append(s"  = $x")
+      lastForwardGoal = null
+
   override def traceIndented[T](str: String)(op: => T): T =
     val str1 = str.replace('\n', ' ')
     if short && str1 == lastForwardGoal then
@@ -3642,12 +3896,13 @@ class ExplainingTypeComparer(initctx: Context, short: Boolean) extends TypeCompa
       b.append("\n").append(" " * indent).append("==> ").append(str1)
       val res = op
       if short then
-        if res == false then
-          if lastForwardGoal != null then  // last was deepest goal that failed
-            b.append("  = false")
-            lastForwardGoal = null
-        else
-          b.length = curLength // don't show successful subtraces
+        res match
+          case false =>
+            appendFailure("false")
+          case res: CaptureSet.CompareResult if res != CaptureSet.CompareResult.OK =>
+            appendFailure(show(res))
+          case _ =>
+            b.length = curLength // don't show successful subtraces
       else
         b.append("\n").append(" " * indent).append("<== ").append(str1).append(" = ").append(show(res))
       indent -= 2
@@ -3662,7 +3917,7 @@ class ExplainingTypeComparer(initctx: Context, short: Boolean) extends TypeCompa
   override def recur(tp1: Type, tp2: Type): Boolean =
     def moreInfo =
       if Config.verboseExplainSubtype || ctx.settings.verbose.value
-      then s" ${tp1.getClass} ${tp2.getClass}"
+      then s" ${tp1.className} ${tp2.className}"
       else ""
     val approx = approxState
     def approxStr = if short then "" else approx.show
@@ -3698,6 +3953,11 @@ class ExplainingTypeComparer(initctx: Context, short: Boolean) extends TypeCompa
   override def subCaptures(refs1: CaptureSet, refs2: CaptureSet, frozen: Boolean)(using Context): CaptureSet.CompareResult =
     traceIndented(i"subcaptures $refs1 <:< $refs2 ${if frozen then "frozen" else ""}") {
       super.subCaptures(refs1, refs2, frozen)
+    }
+
+  override def subCapturesMapped(refs1: CaptureSet, refs2: CaptureSet, frozen: Boolean)(using Context): CaptureSet.CompareResult =
+    traceIndented(i"subcaptures mapped $refs1 <:< $refs2 ${if frozen then "frozen" else ""}") {
+      super.subCapturesMapped(refs1, refs2, frozen)
     }
 
   def lastTrace(header: String): String = header + { try b.toString finally b.clear() }

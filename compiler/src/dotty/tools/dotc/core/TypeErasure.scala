@@ -5,7 +5,6 @@ package core
 import Symbols.*, Types.*, Contexts.*, Flags.*, Names.*, StdNames.*, Phases.*
 import Flags.JavaDefined
 import Uniques.unique
-import TypeOps.makePackageObjPrefixExplicit
 import backend.sjs.JSDefinitions
 import transform.ExplicitOuter.*
 import transform.ValueClasses.*
@@ -24,11 +23,16 @@ enum SourceLanguage:
 object SourceLanguage:
   /** The language in which `sym` was defined. */
   def apply(sym: Symbol)(using Context): SourceLanguage =
-    if sym.is(JavaDefined) then
+    // We might be using this method while recalculating the denotation,
+    // so let's use `lastKnownDenotation`.
+    // This is ok as the source of the symbol and whether it is inline should
+    // not change between runs/phases.
+    val denot = sym.lastKnownDenotation
+    if denot.is(JavaDefined) then
       SourceLanguage.Java
     // Scala 2 methods don't have Inline set, except for the ones injected with `patchStdlibClass`
     // which are really Scala 3 methods.
-    else if sym.isClass && sym.is(Scala2x) || (sym.maybeOwner.is(Scala2x) && !sym.is(Inline)) then
+    else if denot.isClass && denot.is(Scala2x) || (denot.maybeOwner.lastKnownDenotation.is(Scala2x) && !denot.is(Inline)) then
       SourceLanguage.Scala2
     else
       SourceLanguage.Scala3
@@ -266,7 +270,7 @@ object TypeErasure {
         tp.paramNames, tp.paramNames map (Function.const(TypeBounds.upper(defn.ObjectType))), tp.resultType)
 
     if (defn.isPolymorphicAfterErasure(sym)) eraseParamBounds(sym.info.asInstanceOf[PolyType])
-    else if (sym.isAbstractType) TypeAlias(WildcardType)
+    else if (sym.isAbstractOrParamType) TypeAlias(WildcardType)
     else if sym.is(ConstructorProxy) then NoType
     else if (sym.isConstructor) outer.addParam(sym.owner.asClass, erase(tp)(using preErasureCtx))
     else if (sym.is(Label)) erase.eraseResult(sym.info)(using preErasureCtx)
@@ -747,16 +751,19 @@ class TypeErasure(sourceLanguage: SourceLanguage, semiEraseVCs: Boolean, isConst
     assert(!etp.isInstanceOf[WildcardType] || inSigName, i"Unexpected WildcardType erasure for $tp")
     etp
 
-  /** Like translucentSuperType, but issue a fatal error if it does not exist. */
+  /** Like translucentSuperType, but issue a fatal error if it does not exist.
+   *  If using the best-effort option, the fatal error will not be issued.
+  */
   private def checkedSuperType(tp: TypeProxy)(using Context): Type =
     val tp1 = tp.translucentSuperType
     if !tp1.exists then
-      val msg = tp.typeConstructor match
+      val typeErr = tp.typeConstructor match
         case tycon: TypeRef =>
-          MissingType(tycon.prefix, tycon.name).toMessage.message
+          MissingType(tycon.prefix, tycon.name)
         case _ =>
-          i"Cannot resolve reference to $tp"
-      throw FatalError(msg)
+          TypeError(em"Cannot resolve reference to $tp")
+      if ctx.isBestEffort then report.error(typeErr.toMessage)
+      else throw typeErr
     tp1
 
   /** Widen term ref, skipping any `()` parameter of an eventual getter. Used to erase a TermRef.

@@ -23,7 +23,7 @@ import scala.annotation.switch
 import typer.Checking.checkNonCyclic
 import io.{AbstractFile, ZipArchive}
 import scala.util.control.NonFatal
-import dotty.tools.dotc.classpath.FileUtils.classToTasty
+import dotty.tools.dotc.classpath.FileUtils.hasSiblingTasty
 
 import scala.compiletime.uninitialized
 
@@ -403,9 +403,10 @@ class ClassfileParser(
 
       val privateWithin = getPrivateWithin(jflags)
 
-      classRoot.setPrivateWithin(privateWithin)
-      moduleRoot.setPrivateWithin(privateWithin)
-      moduleRoot.sourceModule.setPrivateWithin(privateWithin)
+      if privateWithin.exists then
+        classRoot.setPrivateWithin(privateWithin)
+        moduleRoot.setPrivateWithin(privateWithin)
+        moduleRoot.sourceModule.setPrivateWithin(privateWithin)
 
       for (i <- 0 until in.nextChar) parseMember(method = false)
       for (i <- 0 until in.nextChar) parseMember(method = true)
@@ -1059,11 +1060,13 @@ class ClassfileParser(
   private def enterOwnInnerClasses()(using Context, DataReader): Unit = {
     def enterClassAndModule(entry: InnerClassEntry, file: AbstractFile, jflags: Int) =
       SymbolLoaders.enterClassAndModule(
-          getOwner(jflags),
-          entry.originalName,
-          new ClassfileLoader(file),
-          classTranslation.flags(jflags),
-          getScope(jflags))
+        getOwner(jflags),
+        entry.originalName,
+        new ClassfileLoader(file),
+        classTranslation.flags(jflags),
+        getScope(jflags),
+        getPrivateWithin(jflags),
+      )
 
     for entry <- innerClasses.valuesIterator do
       // create a new class member for immediate inner classes
@@ -1143,7 +1146,7 @@ class ClassfileParser(
 
       if (scan(tpnme.TASTYATTR)) {
         val hint =
-          if classfile.classToTasty.isDefined then "This is likely a bug in the compiler. Please report."
+          if classfile.hasSiblingTasty then "This is likely a bug in the compiler. Please report."
           else "This `.tasty` file is missing. Try cleaning the project to fix this issue."
         report.error(s"Loading Scala 3 binary from $classfile. It should have been loaded from `.tasty` file. $hint", NoSourcePosition)
         return None
@@ -1163,7 +1166,10 @@ class ClassfileParser(
         // attribute isn't, this classfile is a compilation artifact.
         return Some(NoEmbedded)
 
-      if (scan(tpnme.ScalaSignatureATTR) && scan(tpnme.RuntimeVisibleAnnotationATTR)) {
+      if (scan(tpnme.ScalaSignatureATTR)) {
+        if !scan(tpnme.RuntimeVisibleAnnotationATTR) then
+          report.error(em"No RuntimeVisibleAnnotations in classfile with ScalaSignature attribute: ${classRoot.fullName}")
+          return None
         val attrLen = in.nextInt
         val nAnnots = in.nextChar
         var i = 0

@@ -11,6 +11,7 @@ import StdNames.*
 import Names.TermName
 import NameKinds.OuterSelectName
 import NameKinds.SuperAccessorName
+import Decorators.*
 
 import ast.tpd.*
 import util.{ SourcePosition, NoSourcePosition }
@@ -66,7 +67,22 @@ import dotty.tools.dotc.core.Flags.AbstractOrTrait
  *     whole-program analysis. However, the check is not modular in terms of project boundaries.
  *
  */
-class Objects:
+class Objects(using Context @constructorOnly):
+  val immutableHashSetNode: Symbol = requiredClass("scala.collection.immutable.SetNode")
+  // TODO: this should really be an annotation on the rhs of the field initializer rather than the field itself.
+  val SetNode_EmptySetNode: Symbol = Denotations.staticRef("scala.collection.immutable.SetNode.EmptySetNode".toTermName).symbol
+  val immutableHashSet: Symbol = requiredModule("scala.collection.immutable.HashSet")
+  val HashSet_EmptySet: Symbol = Denotations.staticRef("scala.collection.immutable.HashSet.EmptySet".toTermName).symbol
+  val immutableVector: Symbol = requiredModule("scala.collection.immutable.Vector")
+  val Vector_EmptyIterator: Symbol = immutableVector.requiredValue("emptyIterator")
+  val immutableMapNode: Symbol = requiredModule("scala.collection.immutable.MapNode")
+  val MapNode_EmptyMapNode: Symbol = immutableMapNode.requiredValue("EmptyMapNode")
+  val immutableHashMap: Symbol = requiredModule("scala.collection.immutable.HashMap")
+  val HashMap_EmptyMap: Symbol = immutableHashMap.requiredValue("EmptyMap")
+  val immutableLazyList: Symbol = requiredModule("scala.collection.immutable.LazyList")
+  val LazyList_empty: Symbol = immutableLazyList.requiredValue("_empty")
+
+  val whiteList: Set[Symbol] = Set(SetNode_EmptySetNode, HashSet_EmptySet, Vector_EmptyIterator, MapNode_EmptyMapNode, HashMap_EmptyMap, LazyList_empty)
 
   // ----------------------------- abstract domain -----------------------------
 
@@ -197,7 +213,7 @@ class Objects:
    *
    * @param owner The static object whose initialization creates the array.
    */
-  case class OfArray(owner: ClassSymbol, regions: Regions.Data)(using @constructorOnly ctx: Context) extends ValueElement:
+  case class OfArray(owner: ClassSymbol, regions: Regions.Data)(using @constructorOnly ctx: Context, @constructorOnly trace: Trace) extends ValueElement:
     val klass: ClassSymbol = defn.ArrayClass
     val addr: Heap.Addr = Heap.arrayAddr(regions, owner)
     def show(using Context) = "OfArray(owner = " + owner.show + ")"
@@ -455,9 +471,11 @@ class Objects:
     abstract class Addr:
       /** The static object which owns the mutable slot */
       def owner: ClassSymbol
+      def getTrace: Trace = Trace.empty
 
     /** The address for mutable fields of objects. */
-    private case class FieldAddr(regions: Regions.Data, field: Symbol, owner: ClassSymbol) extends Addr
+    private case class FieldAddr(regions: Regions.Data, field: Symbol, owner: ClassSymbol)(trace: Trace) extends Addr:
+      override def getTrace: Trace = trace
 
     /** The address for mutable local variables . */
     private case class LocalVarAddr(regions: Regions.Data, sym: Symbol, owner: ClassSymbol) extends Addr
@@ -497,13 +515,15 @@ class Objects:
     def localVarAddr(regions: Regions.Data, sym: Symbol, owner: ClassSymbol): Addr =
       LocalVarAddr(regions, sym, owner)
 
-    def fieldVarAddr(regions: Regions.Data, sym: Symbol, owner: ClassSymbol): Addr =
-      FieldAddr(regions, sym, owner)
+    def fieldVarAddr(regions: Regions.Data, sym: Symbol, owner: ClassSymbol)(using Trace): Addr =
+      FieldAddr(regions, sym, owner)(summon[Trace])
 
-    def arrayAddr(regions: Regions.Data, owner: ClassSymbol)(using Context): Addr =
-      FieldAddr(regions, defn.ArrayClass, owner)
+    def arrayAddr(regions: Regions.Data, owner: ClassSymbol)(using Trace, Context): Addr =
+      FieldAddr(regions, defn.ArrayClass, owner)(summon[Trace])
 
     def getHeapData()(using mutable: MutableData): Data = mutable.heap
+
+    def setHeap(newHeap: Data)(using mutable: MutableData): Unit = mutable.heap = newHeap
 
   /** Cache used to terminate the check  */
   object Cache:
@@ -520,6 +540,7 @@ class Objects:
         val result = super.cachedEval(config, expr, cacheResult, default = Res(Bottom, Heap.getHeapData())) { expr =>
           Res(fun(expr), Heap.getHeapData())
         }
+        Heap.setHeap(result.heap)
         result.value
   end Cache
 
@@ -654,12 +675,12 @@ class Objects:
         if arr.addr.owner == State.currentObject then
           Heap.read(arr.addr)
         else
-          errorReadOtherStaticObject(State.currentObject, arr.addr.owner)
+          errorReadOtherStaticObject(State.currentObject, arr.addr)
           Bottom
       else if target == defn.Array_update then
         assert(args.size == 2, "Incorrect number of arguments for Array update, found = " + args.size)
         if arr.addr.owner != State.currentObject then
-          errorMutateOtherStaticObject(State.currentObject, arr.addr.owner)
+          errorMutateOtherStaticObject(State.currentObject, arr.addr)
         else
           Heap.writeJoin(arr.addr, args.tail.head.value)
         Bottom
@@ -684,6 +705,9 @@ class Objects:
           val arr = OfArray(State.currentObject, summon[Regions.Data])
           Heap.writeJoin(arr.addr, args.map(_.value).join)
           arr
+        else if target.equals(defn.Predef_classOf) then
+          // Predef.classOf is a stub method in tasty and is replaced in backend
+          Bottom
         else if target.hasSource then
           val cls = target.owner.enclosingClass.asClass
           val ddef = target.defTree.asInstanceOf[DefDef]
@@ -804,13 +828,14 @@ class Objects:
         else
           Bottom
       else if target.exists then
-        if target.isOneOf(Flags.Mutable) then
+        def isNextFieldOfColonColon: Boolean = ref.klass == defn.ConsClass && target.name.toString == "next"
+        if target.isOneOf(Flags.Mutable) && !isNextFieldOfColonColon then
           if ref.hasVar(target) then
             val addr = ref.varAddr(target)
             if addr.owner == State.currentObject then
               Heap.read(addr)
             else
-              errorReadOtherStaticObject(State.currentObject, addr.owner)
+              errorReadOtherStaticObject(State.currentObject, addr)
               Bottom
           else if ref.isObjectRef && ref.klass.hasSource then
             report.warning("Access uninitialized field " + field.show + ". " + Trace.show, Trace.position)
@@ -845,7 +870,7 @@ class Objects:
       Bottom
 
     case Bottom =>
-      if field.isStaticObject then ObjectRef(field.moduleClass.asClass)
+      if field.isStaticObject then accessObject(field.moduleClass.asClass)
       else Bottom
 
     case ValueSet(values) =>
@@ -879,7 +904,7 @@ class Objects:
       if ref.hasVar(field) then
         val addr = ref.varAddr(field)
         if addr.owner != State.currentObject then
-          errorMutateOtherStaticObject(State.currentObject, addr.owner)
+          errorMutateOtherStaticObject(State.currentObject, addr)
         else
           Heap.writeJoin(addr, rhs)
       else
@@ -889,7 +914,10 @@ class Objects:
     Bottom
   }
 
-  /** Handle new expression `new p.C(args)`.
+  /**
+   * Handle new expression `new p.C(args)`.
+   * The actual instance might be cached without running the constructor.
+   * See tests/init-global/pos/cache-constructor.scala
    *
    * @param outer       The value for `p`.
    * @param klass       The symbol of the class `C`.
@@ -931,7 +959,6 @@ class Objects:
 
         val instance = OfClass(klass, outerWidened, ctor, args.map(_.value), envWidened)
         callConstructor(instance, ctor, args)
-        instance
 
     case ValueSet(values) =>
       values.map(ref => instantiate(ref, klass, ctor, args)).join
@@ -968,7 +995,7 @@ class Objects:
           if addr.owner == State.currentObject then
             Heap.read(addr)
           else
-            errorReadOtherStaticObject(State.currentObject, addr.owner)
+            errorReadOtherStaticObject(State.currentObject, addr)
             Bottom
           end if
         case _ =>
@@ -1020,7 +1047,7 @@ class Objects:
       Env.getVar(sym) match
       case Some(addr) =>
         if addr.owner != State.currentObject then
-          errorMutateOtherStaticObject(State.currentObject, addr.owner)
+          errorMutateOtherStaticObject(State.currentObject, addr)
         else
           Heap.writeJoin(addr, value)
       case _ =>
@@ -1205,11 +1232,12 @@ class Objects:
               extendTrace(id) { evalType(prefix, thisV, klass) }
 
         val value = eval(rhs, thisV, klass)
+        val widened = widenEscapedValue(value, rhs)
 
         if isLocal then
-          writeLocal(thisV, lhs.symbol, value)
+          writeLocal(thisV, lhs.symbol, widened)
         else
-          withTrace(trace2) { assign(receiver, lhs.symbol, value, rhs.tpe) }
+          withTrace(trace2) { assign(receiver, lhs.symbol, widened, rhs.tpe) }
 
       case closureDef(ddef) =>
         Fun(ddef, thisV, klass, summon[Env.Data])
@@ -1466,12 +1494,12 @@ class Objects:
       if isWildcardStarArgList(pats) then
         if pats.size == 1 then
           // call .toSeq
-          val toSeqDenot = scrutineeType.member(nme.toSeq).suchThat(_.info.isParameterless)
+          val toSeqDenot = getMemberMethod(scrutineeType, nme.toSeq, toSeqType(elemType))
           val toSeqRes = call(scrutinee, toSeqDenot.symbol, Nil, scrutineeType, superType = NoType, needResolve = true)
           evalPattern(toSeqRes, pats.head)
         else
           // call .drop
-          val dropDenot = getMemberMethod(scrutineeType, nme.drop, applyType(elemType))
+          val dropDenot = getMemberMethod(scrutineeType, nme.drop, dropType(elemType))
           val dropRes = call(scrutinee, dropDenot.symbol, ArgInfo(Bottom, summon[Trace], EmptyTree) :: Nil, scrutineeType, superType = NoType, needResolve = true)
           for pat <- pats.init do evalPattern(applyRes, pat)
           evalPattern(dropRes, pats.last)
@@ -1547,6 +1575,36 @@ class Objects:
         throw new Exception("unexpected type: " + tp + ", Trace:\n" + Trace.show)
   }
 
+  /** Widen the escaped value (a method argument or rhs of an assignment)
+   *
+   *  The default widening is 1 for most values, 2 for function values.
+   *  User-specified widening annotations are repected.
+   */
+  def widenEscapedValue(value: Value, annotatedTree: Tree): Contextual[Value] =
+    def parseAnnotation: Option[Int] =
+      annotatedTree.tpe.getAnnotation(defn.InitWidenAnnot).flatMap: annot =>
+          annot.argument(0).get match
+            case arg @ Literal(c: Constants.Constant) =>
+              val height = c.intValue
+              if height < 0 then
+                report.warning("The argument should be positive", arg)
+                None
+              else
+                Some(height)
+            case arg =>
+              report.warning("The argument should be a constant integer value", arg)
+              None
+    end parseAnnotation
+
+    parseAnnotation match
+      case Some(i) =>
+        value.widen(i)
+
+      case None =>
+        if value.isInstanceOf[Fun]
+        then value.widen(2)
+        else value.widen(1)
+
   /** Evaluate arguments of methods and constructors */
   def evalArgs(args: List[Arg], thisV: ThisValue, klass: ClassSymbol): Contextual[List[ArgInfo]] =
     val argInfos = new mutable.ArrayBuffer[ArgInfo]
@@ -1557,23 +1615,7 @@ class Objects:
         else
           eval(arg.tree, thisV, klass)
 
-      val widened =
-        arg.tree.tpe.getAnnotation(defn.InitWidenAnnot) match
-        case Some(annot) =>
-          annot.argument(0).get match
-          case arg @ Literal(c: Constants.Constant) =>
-            val height = c.intValue
-            if height < 0 then
-              report.warning("The argument should be positive", arg)
-              res.widen(1)
-            else
-              res.widen(c.intValue)
-          case arg =>
-            report.warning("The argument should be a constant integer value", arg)
-            res.widen(1)
-        case _ =>
-          if res.isInstanceOf[Fun] then res.widen(2) else res.widen(1)
-
+      val widened = widenEscapedValue(res, arg.tree)
       argInfos += ArgInfo(widened, trace.add(arg.tree), arg.tree)
     }
     argInfos.toList
@@ -1685,8 +1727,8 @@ class Objects:
     // class body
     tpl.body.foreach {
       case vdef : ValDef if !vdef.symbol.is(Flags.Lazy) && !vdef.rhs.isEmpty =>
-        val res = eval(vdef.rhs, thisV, klass)
         val sym = vdef.symbol
+        val res = if (whiteList.contains(sym)) Bottom else eval(vdef.rhs, thisV, klass)
         if sym.is(Flags.Mutable) then
           val addr = Heap.fieldVarAddr(summon[Regions.Data], sym, State.currentObject)
           thisV.initVar(sym, addr)
@@ -1757,20 +1799,31 @@ class Objects:
       if cls.isAllOf(Flags.JavaInterface) then Bottom
       else evalType(tref.prefix, thisV, klass, elideObjectAccess = cls.isStatic)
 
+  def printTraceWhenMultiple(trace: Trace)(using Context): String =
+    if trace.toVector.size > 1 then
+      Trace.buildStacktrace(trace, "The mutable state is created through: " + System.lineSeparator())
+    else ""
+
   val mutateErrorSet: mutable.Set[(ClassSymbol, ClassSymbol)] = mutable.Set.empty
-  def errorMutateOtherStaticObject(currentObj: ClassSymbol, otherObj: ClassSymbol)(using Trace, Context) =
+  def errorMutateOtherStaticObject(currentObj: ClassSymbol, addr: Heap.Addr)(using Trace, Context) =
+    val otherObj = addr.owner
+    val addr_trace = addr.getTrace
     if mutateErrorSet.add((currentObj, otherObj)) then
       val msg =
         s"Mutating ${otherObj.show} during initialization of ${currentObj.show}.\n" +
-        "Mutating other static objects during the initialization of one static object is forbidden. " + Trace.show
+        "Mutating other static objects during the initialization of one static object is forbidden. " + Trace.show +
+        printTraceWhenMultiple(addr_trace)
 
       report.warning(msg, Trace.position)
 
   val readErrorSet: mutable.Set[(ClassSymbol, ClassSymbol)] = mutable.Set.empty
-  def errorReadOtherStaticObject(currentObj: ClassSymbol, otherObj: ClassSymbol)(using Trace, Context) =
+  def errorReadOtherStaticObject(currentObj: ClassSymbol, addr: Heap.Addr)(using Trace, Context) =
+    val otherObj = addr.owner
+    val addr_trace = addr.getTrace
     if readErrorSet.add((currentObj, otherObj)) then
       val msg =
         "Reading mutable state of " + otherObj.show + " during initialization of " + currentObj.show + ".\n" +
-        "Reading mutable state of other static objects is forbidden as it breaks initialization-time irrelevance. " + Trace.show
+        "Reading mutable state of other static objects is forbidden as it breaks initialization-time irrelevance. " + Trace.show +
+        printTraceWhenMultiple(addr_trace)
 
       report.warning(msg, Trace.position)

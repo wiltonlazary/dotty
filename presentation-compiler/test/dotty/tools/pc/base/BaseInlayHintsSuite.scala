@@ -8,9 +8,7 @@ import scala.meta.internal.metals.CompilerRangeParams
 import scala.language.unsafeNulls
 
 import dotty.tools.pc.utils.TestInlayHints
-import dotty.tools.pc.utils.TextEdits
 
-import org.eclipse.lsp4j.TextEdit
 
 class BaseInlayHintsSuite extends BasePCSuite {
 
@@ -18,6 +16,7 @@ class BaseInlayHintsSuite extends BasePCSuite {
       base: String,
       expected: String,
       kind: Option[Int] = None,
+      hintsInPatternMatch: Boolean = false
   ): Unit =
     def pkgWrap(text: String) =
       if (text.contains("package")) text
@@ -35,7 +34,8 @@ class BaseInlayHintsSuite extends BasePCSuite {
       true,
       true,
       true,
-      true
+      true,
+      hintsInPatternMatch
     )
 
     val inlayHints = presentationCompiler
@@ -49,8 +49,8 @@ class BaseInlayHintsSuite extends BasePCSuite {
     val obtained = TestInlayHints.applyInlayHints(withPkg, inlayHints)
 
     assertNoDiff(
+      pkgWrap(expected),
       obtained,
-      pkgWrap(expected)
     )
 
 }

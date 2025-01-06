@@ -174,7 +174,7 @@ object Scanners {
   }
 
   class Scanner(source: SourceFile, override val startFrom: Offset = 0, profile: Profile = NoProfile, allowIndent: Boolean = true)(using Context) extends ScannerCommon(source) {
-    val keepComments = !ctx.settings.YdropComments.value
+    val keepComments = !ctx.settings.XdropComments.value
 
     /** A switch whether operators at the start of lines can be infix operators */
     private[Scanners] var allowLeadingInfixOperators = true
@@ -212,6 +212,7 @@ object Scanners {
 
     def featureEnabled(name: TermName) = Feature.enabled(name)(using languageImportContext)
     def erasedEnabled = featureEnabled(Feature.erasedDefinitions)
+    def trackedEnabled = featureEnabled(Feature.modularity)
 
     private var postfixOpsEnabledCache = false
     private var postfixOpsEnabledCtx: Context = NoContext
@@ -306,11 +307,15 @@ object Scanners {
         println(s"\nSTART SKIP AT ${sourcePos().line + 1}, $this in $currentRegion")
       var noProgress = 0
         // Defensive measure to ensure we always get out of the following while loop
-        // even if source file is weirly formatted (i.e. we never reach EOF
+        // even if source file is weirly formatted (i.e. we never reach EOF)
+      var prevOffset = offset
       while !atStop && noProgress < 3 do
-        val prevOffset = offset
         nextToken()
-        if offset == prevOffset then noProgress += 1 else noProgress = 0
+        if offset <= prevOffset then
+          noProgress += 1
+        else
+          prevOffset = offset
+          noProgress = 0
       if debugTokenStream then
         println(s"\nSTOP SKIP AT ${sourcePos().line + 1}, $this in $currentRegion")
       if token == OUTDENT then dropUntil(_.isInstanceOf[Indented])
@@ -684,7 +689,7 @@ object Scanners {
       if !r.isOutermost
          && closingRegionTokens.contains(token)
          && !(token == CASE && r.prefix == MATCH)
-         && next.token == EMPTY  // can be violated for ill-formed programs, e.g. neg/i12605.sala
+         && next.token == EMPTY  // can be violated for ill-formed programs, e.g. neg/i12605.scala
       =>
         insert(OUTDENT, offset)
       case _ =>
@@ -736,7 +741,10 @@ object Scanners {
                  && currentRegion.commasExpected
                  && (token == RPAREN || token == RBRACKET || token == RBRACE || token == OUTDENT)
               then
-                () /* skip the trailing comma */
+                // encountered a trailing comma
+                // reset only the lastOffset
+                // so that the tree's span is correct
+                lastOffset = prev.lastOffset
               else
                 reset()
         case END =>
@@ -884,7 +892,7 @@ object Scanners {
             nextChar()
             ch match {
               case 'x' | 'X' => base = 16 ; nextChar()
-              //case 'b' | 'B' => base = 2  ; nextChar()
+              case 'b' | 'B' => base = 2  ; nextChar()
               case _         => base = 10 ; putChar('0')
             }
             if (base != 10 && !isNumberSeparator(ch) && digit2int(ch, base) < 0)
@@ -1188,7 +1196,7 @@ object Scanners {
 
     def isSoftModifier: Boolean =
       token == IDENTIFIER
-      && (softModifierNames.contains(name) || name == nme.erased && erasedEnabled)
+      && (softModifierNames.contains(name) || name == nme.erased && erasedEnabled || name == nme.tracked && trackedEnabled)
 
     def isSoftModifierInModifierPosition: Boolean =
       isSoftModifier && inModifierPosition()

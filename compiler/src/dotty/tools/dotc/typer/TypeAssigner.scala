@@ -51,7 +51,7 @@ trait TypeAssigner {
     else sym.info
 
   private def toRepeated(tree: Tree, from: ClassSymbol)(using Context): Tree =
-    Typed(tree, TypeTree(tree.tpe.widen.translateToRepeated(from)))
+    Typed(tree, TypeTree(tree.tpe.widen.translateToRepeated(from), inferred = true))
 
   def seqToRepeated(tree: Tree)(using Context): Tree = toRepeated(tree, defn.SeqClass)
 
@@ -85,7 +85,7 @@ trait TypeAssigner {
       defn.FromJavaObjectType
     else tpe match
       case tpe: NamedType =>
-        val tpe1 = TypeOps.makePackageObjPrefixExplicit(tpe)
+        val tpe1 = tpe.makePackageObjPrefixExplicit
         if tpe1 ne tpe then
           accessibleType(tpe1, superAccess)
         else
@@ -261,7 +261,7 @@ trait TypeAssigner {
           else if (ctx.erasedTypes) cls.info.firstParent.typeConstructor
           else {
             val ps = cls.classInfo.parents
-            if (ps.isEmpty) defn.AnyType else ps.reduceLeft((x: Type, y: Type) => x & y)
+            if ps.isEmpty then defn.AnyType else ps.reduceLeft(AndType(_, _))
           }
         SuperType(cls.thisType, owntype)
 
@@ -360,20 +360,21 @@ trait TypeAssigner {
                 resultType1)
             }
           }
+          else if !args.hasSameLengthAs(paramNames) then
+            wrongNumberOfTypeArgs(fn.tpe, pt.typeParams, args, tree.srcPos)
           else {
             // Make sure arguments don't contain the type `pt` itself.
-            // make a copy of the argument if that's the case.
+            // Make a copy of `pt` if that's the case.
             // This is done to compensate for the fact that normally every
             // reference to a polytype would have to be a fresh copy of that type,
             // but we want to avoid that because it would increase compilation cost.
             // See pos/i6682a.scala for a test case where the defensive copying matters.
-            val ensureFresh = new TypeMap with CaptureSet.IdempotentCaptRefMap:
-              def apply(tp: Type) = mapOver(
-                if tp eq pt then pt.newLikeThis(pt.paramNames, pt.paramInfos, pt.resType)
-                else tp)
-            val argTypes = args.tpes.mapConserve(ensureFresh)
-            if (argTypes.hasSameLengthAs(paramNames)) pt.instantiate(argTypes)
-            else wrongNumberOfTypeArgs(fn.tpe, pt.typeParams, args, tree.srcPos)
+            val needsFresh = new ExistsAccumulator(_ eq pt, StopAt.None, forceLazy = false)
+            val argTypes = args.tpes
+            val pt1 = if argTypes.exists(needsFresh(false, _)) then
+              pt.newLikeThis(pt.paramNames, pt.paramInfos, pt.resType)
+            else pt
+            pt1.instantiate(argTypes)
           }
         }
       case err: ErrorType =>
@@ -428,13 +429,7 @@ trait TypeAssigner {
   def assignType(tree: untpd.CaseDef, pat: Tree, body: Tree)(using Context): CaseDef = {
     val ownType =
       if (body.isType) {
-        val getParams = new TreeAccumulator[mutable.ListBuffer[TypeSymbol]] {
-          def apply(ps: mutable.ListBuffer[TypeSymbol], t: Tree)(using Context) = t match {
-            case t: Bind if t.symbol.isType => foldOver(ps += t.symbol.asType, t)
-            case _ => foldOver(ps, t)
-          }
-        }
-        val params1 = getParams(new mutable.ListBuffer[TypeSymbol](), pat).toList
+        val params1 = pat.bindTypeSymbols
         val params2 = pat.tpe match
           case AppliedType(tycon, args) =>
             val tparams = tycon.typeParamSymbols
@@ -519,9 +514,7 @@ trait TypeAssigner {
   def assignType(tree: untpd.TypeBoundsTree, lo: Tree, hi: Tree, alias: Tree)(using Context): TypeBoundsTree =
     tree.withType(
       if !alias.isEmpty then alias.tpe
-      else if lo eq hi then
-        if lo.tpe.isMatch then MatchAlias(lo.tpe)
-        else TypeAlias(lo.tpe)
+      else if lo eq hi then AliasingBounds(lo.tpe)
       else TypeBounds(lo.tpe, hi.tpe))
 
   def assignType(tree: untpd.Bind, sym: Symbol)(using Context): Bind =
@@ -532,6 +525,12 @@ trait TypeAssigner {
 
   def assignType(tree: untpd.UnApply, proto: Type)(using Context): UnApply =
     tree.withType(proto)
+
+  def assignType(tree: untpd.Splice, expr: Tree)(using Context): Splice =
+    val tpe = expr.tpe // Quotes ?=> Expr[T]
+      .baseType(defn.FunctionSymbol(1, isContextual = true)).argTypes.last // Expr[T]
+      .baseType(defn.QuotedExprClass).argTypes.head // T
+    tree.withType(tpe)
 
   def assignType(tree: untpd.QuotePattern, proto: Type)(using Context): QuotePattern =
     tree.withType(proto)
